@@ -1,12 +1,19 @@
 import {
-  Button, Form, SecureField, Section, Text, TextField, Toggle, VStack, useEffect, useState,
+  Button, Form, HStack, NavigationLink, SecureField, Section, Text, TextField, Toggle, VStack, useEffect, useState,
 } from "scripting"
 import {
   SKILL_DONE, SKILL_INBOX, SkillMeta, deleteSkill, importSkills, listSkills, readSkill,
-  setSkillEnabled, skillsPrompt, stageSkillFile,
+  setSkillEnabled, skillDirOf, skillsPrompt, stageSkillFile,
 } from "./skills_store"
 import { loadConfig } from "./agent_store"
 import { importSkillFromRepo } from "./repo_import"
+
+/** 搜索匹配：技能名 / 描述，大小写不敏感。 */
+function matchesSkill(s: SkillMeta, query: string): boolean {
+  const needle = (query ?? "").trim().toLowerCase()
+  if (!needle) return true
+  return [s.name, s.description].some((x) => ((x ?? "") as string).toLowerCase().indexOf(needle) >= 0)
+}
 
 interface Props {
   /** 技能有增减 / 启停变化时通知设置页刷新统计。 */
@@ -15,10 +22,11 @@ interface Props {
 
 /**
  * 技能管理页：设置页里的子页（由 NavigationLink 推进来，所以自己不带导航栈）。
- * 三种导入方式：上传 zip / md 文件、从 git 仓库导入、手动丢进「技能」文件夹再扫描。
+ * 上面搜索框 + 技能列表，点一条进详情页看完整说明 / 启停 / 删除；导入方式都收在列表下面。
  */
 export function SkillsPage({ onChanged = () => {} }: Props) {
   const [skills, setSkills] = useState<SkillMeta[]>([])
+  const [query, setQuery] = useState("")
   const [busy, setBusy] = useState("")
   const [note, setNote] = useState("")
   /** 上次用的是哪个仓库 / 令牌（令牌存在配置里，下次进来还有）。 */
@@ -119,34 +127,83 @@ export function SkillsPage({ onChanged = () => {} }: Props) {
     }
   }
 
-  async function removeSkill(s: SkillMeta) {
-    const ok = await Dialog.confirm({
-      title: "删除技能",
-      message: `确定删掉技能「${s.name}」吗？它的所有文件都会被删。`,
-      confirmLabel: "删除",
-    })
-    if (!ok) return
-    deleteSkill(s.id)
-    refresh()
-    onChanged()
-  }
-
-  function viewSkill(s: SkillMeta) {
-    const hit = readSkill(s.id)
-    if (!hit) {
-      Dialog.alert({ title: "读不到", message: "SKILL.md 可能已被删掉。" })
-      return
-    }
-    const head = hit.content.length > 6000 ? hit.content.slice(0, 6000) + "\n…（已截断）" : hit.content
-    Dialog.alert({ title: s.name, message: head || "（SKILL.md 是空的）" })
-  }
-
   const promptSize = skillsPrompt()?.length ?? 0
   const enabledCount = skills.filter((s) => s.enabled).length
+  const shown = skills.filter((s) => matchesSkill(s, query))
 
   return (
-    <VStack navigationTitle="技能" navigationBarTitleDisplayMode="inline">
+    <VStack
+      navigationTitle="技能"
+      navigationBarTitleDisplayMode="inline"
+      searchable={{
+        value: query,
+        onChanged: setQuery,
+        placement: "navigationBarDrawerAlwaysDisplay",
+        prompt: "搜技能名 / 描述",
+      }}
+    >
       <Form>
+        <Section
+          header={<Text>{skills.length > 0 ? `技能 ${skills.length} 个` : "技能列表"}</Text>}
+          footer={
+            <Text>
+              点一条进去看它的完整说明（SKILL.md）、启停和删除。启用状态是立刻生效的，不用回设置页保存。
+            </Text>
+          }
+        >
+          {skills.length === 0 ? (
+            <Text foregroundStyle="secondaryLabel">还没有导入任何技能，用下面的方式装一个。</Text>
+          ) : shown.length === 0 ? (
+            <Text foregroundStyle="secondaryLabel">{`没有名字或描述里带「${query.trim()}」的技能。`}</Text>
+          ) : (
+            shown.map((s) => (
+              <NavigationLink
+                key={s.id}
+                destination={
+                  <SkillDetail
+                    meta={s}
+                    onChanged={onChanged}
+                    onDeleted={() => {
+                      refresh()
+                      onChanged()
+                    }}
+                  />
+                }
+              >
+                <VStack alignment="leading" spacing={3} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+                  <HStack spacing={6}>
+                    <Text fontWeight="semibold" foregroundStyle="label">
+                      {s.name}
+                    </Text>
+                    {s.enabled ? null : (
+                      <Text font="caption2" foregroundStyle="secondaryLabel">
+                        {"已停用"}
+                      </Text>
+                    )}
+                  </HStack>
+                  <Text font="footnote" foregroundStyle="secondaryLabel">
+                    {s.description || "（没有写描述）"}
+                  </Text>
+                </VStack>
+              </NavigationLink>
+            ))
+          )}
+        </Section>
+
+        <Section
+          header={<Text>怎么用</Text>}
+          footer={
+            <Text>
+              只有技能名和一句话描述会进系统提示（省 token）；真正要执行时才让模型用 read_skill 读出完整步骤，这就是渐进式披露。
+            </Text>
+          }
+        >
+          <Text>{`${skills.length} 个技能，启用 ${enabledCount} 个`}</Text>
+          <Text font="footnote" foregroundStyle="secondaryLabel">
+            {promptSize > 0 ? `系统提示里占约 ${promptSize} 字` : "关闭状态或没有可用技能"}
+          </Text>
+        </Section>
+
         <Section
           header={<Text>上传技能包</Text>}
           footer={
@@ -202,11 +259,6 @@ export function SkillsPage({ onChanged = () => {} }: Props) {
             disabled={busy !== ""}
             action={importFromRepo}
           />
-          {note ? (
-            <Text font="footnote" foregroundStyle="secondaryLabel">
-              {note}
-            </Text>
-          ) : null}
         </Section>
 
         <Section
@@ -230,50 +282,134 @@ export function SkillsPage({ onChanged = () => {} }: Props) {
           />
         </Section>
 
-        <Section
-          header={<Text>怎么用</Text>}
-          footer={
-            <Text>
-              只有技能名和一句话描述会进系统提示（省 token）；真正要执行时才让模型用 read_skill 读出完整步骤，这就是渐进式披露。
-            </Text>
-          }
-        >
-          <Text>{`${skills.length} 个技能，启用 ${enabledCount} 个`}</Text>
-          <Text font="footnote" foregroundStyle="secondaryLabel">
-            {promptSize > 0 ? `系统提示里占约 ${promptSize} 字` : "关闭状态或没有可用技能"}
-          </Text>
-        </Section>
-
-        <Section header={<Text>技能列表</Text>}>
-          {skills.length === 0 ? (
-            <Text foregroundStyle="secondaryLabel">还没有导入任何技能</Text>
-          ) : (
-            skills.map((s) => (
-              <VStack key={s.id} alignment="leading" spacing={4}>
-                <Text fontWeight="semibold">{s.name}</Text>
-                <Text font="footnote" foregroundStyle="secondaryLabel">
-                  {s.description || "（没有写描述）"}
-                </Text>
-                <Toggle
-                  title="启用"
-                  value={s.enabled}
-                  onChanged={(v) => {
-                    setSkillEnabled(s.id, v)
-                    refresh()
-                    onChanged()
-                  }}
-                />
-                <Button title="查看说明" action={() => viewSkill(s)} />
-                <Button title="删除" role="destructive" action={() => removeSkill(s)} />
-              </VStack>
-            ))
-          )}
-        </Section>
+        {busy || note ? (
+          <Section header={<Text>进度</Text>}>
+            {busy ? <Text>{busy}</Text> : null}
+            {note ? (
+              <Text font="footnote" foregroundStyle="secondaryLabel">
+                {note}
+              </Text>
+            ) : null}
+          </Section>
+        ) : null}
 
         <Section header={<Text>文件位置</Text>}>
           <Text font="footnote" foregroundStyle="secondaryLabel">
             {"已导入归档：" + SKILL_DONE}
           </Text>
+        </Section>
+      </Form>
+    </VStack>
+  )
+}
+
+interface DetailProps {
+  meta: SkillMeta
+  /** 启停 / 删除后通知列表页刷新（启停是直接写盘的）。 */
+  onChanged: () => void
+  /** 删除成功：列表页刷新自己。 */
+  onDeleted: () => void
+}
+
+/**
+ * 技能详情页：完整说明（SKILL.md 全文，不再截断）、附件清单、启停、删除。
+ * 启停和删除都直接写盘，不用回设置页保存。
+ */
+export function SkillDetail({ meta, onChanged, onDeleted }: DetailProps) {
+  const [enabled, setEnabled] = useState(meta.enabled)
+  const [content, setContent] = useState<string | null>(null)
+  const [files, setFiles] = useState<string[]>(meta.files ?? [])
+  const [dir, setDir] = useState(skillDirOf(meta))
+  const [note, setNote] = useState("")
+
+  useEffect(() => {
+    const hit = readSkill(meta.id)
+    if (!hit) {
+      setContent("")
+      setNote("读不到 SKILL.md：可能已经被删掉了。")
+      return
+    }
+    setContent(hit.content)
+    setFiles(hit.files)
+    setDir(skillDirOf(hit.meta))
+  }, [])
+
+  function toggle(v: boolean) {
+    setEnabled(v)
+    setSkillEnabled(meta.id, v)
+    onChanged()
+  }
+
+  async function copyContent() {
+    if (!content) return
+    try {
+      await Pasteboard.setString(content)
+      setNote("已拷贝 SKILL.md 全文。")
+    } catch (e: any) {
+      setNote("写剪贴板失败：" + (e?.message ?? String(e)))
+    }
+  }
+
+  async function remove() {
+    const ok = await Dialog.confirm({
+      title: "删除技能",
+      message: `确定删掉技能「${meta.name}」吗？它的所有文件都会被删。`,
+      confirmLabel: "删除",
+    })
+    if (!ok) return
+    deleteSkill(meta.id)
+    onDeleted()
+  }
+
+  return (
+    <VStack navigationTitle={meta.name} navigationBarTitleDisplayMode="inline">
+      <Form>
+        <Section
+          header={<Text>{meta.enabled ? "已启用" : "已停用"}</Text>}
+          footer={<Text>{enabled ? "启用中：技能名和描述会进系统提示。" : "停用中：不会进系统提示，模型用不到它。"}</Text>}
+        >
+          <Text>{meta.description || "（没有写描述）"}</Text>
+          <Toggle title="启用" value={enabled} onChanged={toggle} />
+          <Button title="删除这个技能" role="destructive" action={remove} />
+        </Section>
+
+        <Section
+          header={<Text>说明（SKILL.md）</Text>}
+          footer={
+            <Text>
+              这是模型要用这个技能时读到的完整说明（read_skill 读的就是它）。
+            </Text>
+          }
+        >
+          {content === null ? (
+            <Text foregroundStyle="secondaryLabel">正在读取…</Text>
+          ) : content ? (
+            <Text font="footnote">{content}</Text>
+          ) : (
+            <Text foregroundStyle="secondaryLabel">（没读到 SKILL.md 的内容）</Text>
+          )}
+          {content ? <Button title="拷贝全文" systemImage="doc.on.doc" action={copyContent} /> : null}
+        </Section>
+
+        <Section header={<Text>{`附件 ${files.length} 个`}</Text>}>
+          {files.length === 0 ? (
+            <Text foregroundStyle="secondaryLabel">没有额外文件。</Text>
+          ) : (
+            <Text font="footnote" foregroundStyle="secondaryLabel">
+              {files.join("\n")}
+            </Text>
+          )}
+        </Section>
+
+        <Section header={<Text>文件位置</Text>}>
+          <Text font="footnote" foregroundStyle="secondaryLabel">
+            {dir}
+          </Text>
+          {note ? (
+            <Text font="footnote" foregroundStyle="secondaryLabel">
+              {note}
+            </Text>
+          ) : null}
         </Section>
       </Form>
     </VStack>

@@ -2,6 +2,7 @@ import {
   Button,
   Form,
   HStack,
+  NavigationLink,
   Script,
   Section,
   Spacer,
@@ -244,6 +245,47 @@ export function FieldRow(props: { label: string; children: any }) {
   )
 }
 
+/** 列表行的标题：优先用「快捷指令」App 里的真名。 */
+function toolTitle(t: ToolRow): string {
+  return (t.shortcutName ?? "").trim() || "（还没填快捷指令名）"
+}
+
+/** 列表行的一行摘要：模型看到的工具名 + 参数个数。 */
+function toolSubtitle(t: ToolRow, i: number): string {
+  const specs = paramDraftsToSpecs(t.params ?? [])
+  const auto = makeToolFunctionName("", t.shortcutName, i, new Set<string>()).name
+  const fn = (t.name ?? "").trim() || auto
+  const bits = [fn, specs.length > 0 ? `${specs.length} 个参数` : "不带参数"]
+  if (t.returns === true) bits.push("回传")
+  if (t.parameters) bits.push("高级 schema")
+  return bits.join(" · ")
+}
+
+/** 搜索匹配：快捷指令名 / 工具名 / 说明，大小写不敏感。 */
+function matchesTool(t: ToolRow, query: string): boolean {
+  const needle = (query ?? "").trim().toLowerCase()
+  if (!needle) return true
+  return [t.shortcutName, t.name, t.description].some(
+    (s) => ((s ?? "") as string).toLowerCase().indexOf(needle) >= 0,
+  )
+}
+
+/** 列表行的「名字 + 摘要」，点进去才是详情。 */
+function ToolListRow(props: { row: ToolRow; index: number; destination: any }) {
+  return (
+    <NavigationLink destination={props.destination}>
+      <VStack alignment="leading" spacing={3} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+        <Text fontWeight="semibold" foregroundStyle="label">
+          {toolTitle(props.row)}
+        </Text>
+        <Text font="footnote" foregroundStyle="secondaryLabel">
+          {toolSubtitle(props.row, props.index)}
+        </Text>
+      </VStack>
+    </NavigationLink>
+  )
+}
+
 interface Props {
   /** 设置页里当前的草稿行。 */
   rows: ToolRow[]
@@ -252,15 +294,13 @@ interface Props {
 }
 
 /**
- * 「本地快捷指令工具」子页：一个真·快捷指令 = 一个工具。
+ * 「本地快捷指令工具」子页：上面搜索框，中间工具列表，点一条进详情页配。
  * 由设置页用 NavigationLink 推进来，所以这里**不用**再套 NavigationStack。
  */
 export function ToolsPage({ rows, onChange }: Props) {
   const [draft, setDraft] = useState<ToolRow[]>(rows.map((r) => ({ ...r })))
-  /** 工具行里的即时反馈（试运行结果 / 拷贝结果），按行 id 归属。 */
-  const [toolNote, setToolNote] = useState<{ id: string; text: string } | null>(null)
-  /** 展开了「快捷指令那边怎么配」的那条工具。 */
-  const [openHint, setOpenHint] = useState("")
+  /** 搜索关键词。 */
+  const [query, setQuery] = useState("")
 
   function push(next: ToolRow[]) {
     setDraft(next)
@@ -275,272 +315,60 @@ export function ToolsPage({ rows, onChange }: Props) {
     push([...draft, newToolRow()])
   }
 
-  /** 一键把「快捷指令」App 里拷来的名字贴上，省得手敲出细微差别。 */
-  async function pasteShortcutName(i: number) {
-    const t = draft[i]
-    try {
-      const text = ((await Pasteboard.getString()) ?? "").trim()
-      const first = text.split(/\r?\n/)[0].trim()
-      if (!first) {
-        setToolNote({
-          id: t.id,
-          text: "剪贴板是空的：先在「快捷指令」里长按那条快捷指令 → 拷贝，再回来点这个按钮。",
-        })
-        return
-      }
-      update(i, { shortcutName: first })
-      setToolNote({ id: t.id, text: `已粘贴名字：${first}` })
-    } catch (e: any) {
-      setToolNote({ id: t.id, text: "读剪贴板失败：" + (e?.message ?? String(e)) })
-    }
-  }
-
   function remove(i: number) {
     push(draft.filter((_, idx) => idx !== i))
   }
 
-  // —— 参数行 ——
-
-  function addParam(i: number) {
-    update(i, { params: [...(draft[i].params ?? []), newParamDraft()] })
-  }
-
-  function updateParam(i: number, j: number, p: Partial<ParamDraft>) {
-    update(i, { params: (draft[i].params ?? []).map((x, idx) => (idx === j ? { ...x, ...p } : x)) })
-  }
-
-  function removeParam(i: number, j: number) {
-    update(i, { params: (draft[i].params ?? []).filter((_, idx) => idx !== j) })
-  }
-
-  // —— 单条工具的动作 ——
-
-  async function copyText(id: string, text: string, msg: string) {
-    try {
-      await Pasteboard.setString(text)
-      setToolNote({ id, text: msg })
-    } catch (e: any) {
-      setToolNote({ id, text: "写剪贴板失败：" + (e?.message ?? String(e)) })
-    }
-  }
-
-  /** 真跑一次看看通不通：把样例参数当输入交给快捷指令。 */
-  async function testRun(i: number) {
-    const t = draft[i]
-    const name = (t.shortcutName ?? "").trim()
-    if (!name) {
-      setToolNote({ id: t.id, text: "这条还没填快捷指令名，先在上面写上名字（要和「快捷指令」App 里一致）。" })
-      return
-    }
-    const input = sampleArgsJSON(paramDraftsToSpecs(t.params ?? []))
-    try {
-      const ok = await Safari.openURL(runShortcutURL(name, input))
-      setToolNote({
-        id: t.id,
-        text: ok
-          ? `已交给系统运行${input ? "，输入：" + input : "（不带输入）"}。要是没任何反应，就是名字和 App 里对不上。`
-          : "打不开这条快捷指令：名字多半写错了（要和「快捷指令」App 里完全一致）。",
-      })
-    } catch (e: any) {
-      setToolNote({ id: t.id, text: "打开失败：" + (e?.message ?? String(e)) })
-    }
-  }
+  const indexed = draft.map((t, i) => ({ t, i }))
+  const shown = indexed.filter((x) => matchesTool(x.t, query))
 
   return (
-    <VStack navigationTitle="本地快捷指令工具" navigationBarTitleDisplayMode="inline">
+    <VStack
+      navigationTitle="本地快捷指令工具"
+      navigationBarTitleDisplayMode="inline"
+      searchable={{
+        value: query,
+        onChanged: setQuery,
+        placement: "navigationBarDrawerAlwaysDisplay",
+        prompt: "搜工具名 / 快捷指令名",
+      }}
+    >
       <Form>
         <Section
-          header={<Text>本地快捷指令工具</Text>}
+          header={
+            <Text>{draft.length > 0 ? `工具 ${draft.length} 条` : "本地快捷指令工具"}</Text>
+          }
           footer={
             <VStack alignment="leading" spacing={4}>
               <Text>
-                一个真·快捷指令 = 一个工具。快捷指令名必须和「快捷指令」App 里完全一致：可以手输，也可以先在「快捷指令」里拷贝名字、再点工具里的「粘贴剪贴板里的名字」。
+                一个真·快捷指令 = 一个工具。点一条进去才是它的详细配置：名字必须和「快捷指令」App 里完全一致（可以手输，也可以先拷贝名字再点「粘贴剪贴板里的名字」）。
               </Text>
-              <Text>
-                往下给每条工具写「说明」和「参数」，模型才知道什么时候用它、该传什么。改完回设置页点「保存」才生效。
-              </Text>
+              <Text>改完回设置页点「保存」才生效。</Text>
             </VStack>
           }
         >
-          <Text foregroundStyle="secondaryLabel">
-            {draft.length === 0
-              ? "还没有本地快捷指令工具。"
-              : `已经有 ${draft.length} 条工具：${draft
-                  .map((t) => (t.shortcutName ?? "").trim() || "（还没填名字）")
-                  .join("、")}`}
-          </Text>
+          {draft.length === 0 ? (
+            <Text foregroundStyle="secondaryLabel">还没有本地快捷指令工具，用下面的「＋ 添加快捷指令工具」加一条。</Text>
+          ) : shown.length === 0 ? (
+            <Text foregroundStyle="secondaryLabel">{`没有名字里带「${query.trim()}」的工具。`}</Text>
+          ) : (
+            shown.map(({ t, i }) => (
+              <ToolListRow
+                key={t.id}
+                row={t}
+                index={i}
+                destination={
+                  <ToolDetail
+                    index={i}
+                    initial={t}
+                    onChange={(p) => update(i, p)}
+                    onDelete={() => remove(i)}
+                  />
+                }
+              />
+            ))
+          )}
         </Section>
-
-        {draft.map((t, i) => {
-          const params = t.params ?? []
-          const specs = paramDraftsToSpecs(params)
-          const auto = makeToolFunctionName("", t.shortcutName, i, new Set<string>()).name
-          /** 快捷指令名里没有英文字母时，自动函数名只能退化成 tool1 这种 —— 提醒用户自己起名。 */
-          const autoWeak = /^tool\d+$/.test(auto) && (t.shortcutName ?? "").trim().length > 0
-          const shortcut = (t.shortcutName ?? "").trim() || auto
-          const hintOpen = openHint === t.id
-          return (
-            <Section
-              key={t.id}
-              header={
-                <Text>{`快捷指令工具 ${i + 1}${t.shortcutName.trim() ? " · " + t.shortcutName.trim() : ""}`}</Text>
-              }
-            >
-              <FieldRow label="快捷指令名">
-                <TextField
-                  title="要和「快捷指令」App 里一致"
-                  value={t.shortcutName}
-                  onChanged={(v: string) => update(i, { shortcutName: v })}
-                />
-              </FieldRow>
-              <Button
-                title="粘贴剪贴板里的名字"
-                systemImage="doc.on.clipboard"
-                action={() => pasteShortcutName(i)}
-              />
-              <Text font="footnote" foregroundStyle="secondaryLabel">
-                名字对不上时「试运行」会打不开：去「快捷指令」App 里核对一下。
-              </Text>
-              <FieldRow label="说明">
-                <TextField
-                  title="给模型看：这工具干什么"
-                  value={t.description}
-                  onChanged={(v: string) => update(i, { description: v })}
-                />
-              </FieldRow>
-
-              {params.length > 0 ? (
-                <Text font="footnote" foregroundStyle="secondaryLabel">
-                  参数（模型会把它们拼成一段 JSON 文本传给快捷指令）
-                </Text>
-              ) : null}
-              {params.map((p, j) => (
-                <VStack key={p.id} spacing={6} padding={{ vertical: 6 }}>
-                  <HStack spacing={8}>
-                    <Text font="footnote" foregroundStyle="secondaryLabel">{`参数 ${j + 1}`}</Text>
-                    <Spacer />
-                    <Button title="删除" role="destructive" action={() => removeParam(i, j)} />
-                  </HStack>
-                  <FieldRow label="字段名">
-                    <TextField
-                      title="英文，如 destination"
-                      value={p.name}
-                      autocorrectionDisabled
-                      textInputAutocapitalization="never"
-                      onChanged={(v: string) => updateParam(i, j, { name: v })}
-                    />
-                  </FieldRow>
-                  <FieldRow label="说明">
-                    <TextField
-                      title="给模型看，如「目的地名称」"
-                      value={p.description}
-                      onChanged={(v: string) => updateParam(i, j, { description: v })}
-                    />
-                  </FieldRow>
-                  <FieldRow label="可选值">
-                    <TextField
-                      title="留空不限，如 driving、walking"
-                      value={p.enumText}
-                      autocorrectionDisabled
-                      textInputAutocapitalization="never"
-                      onChanged={(v: string) => updateParam(i, j, { enumText: v })}
-                    />
-                  </FieldRow>
-                  <Toggle
-                    title={`参数 ${j + 1} 必填`}
-                    value={p.required}
-                    onChanged={(v: boolean) => updateParam(i, j, { required: v })}
-                  />
-                </VStack>
-              ))}
-              <Button title="＋ 添加参数" systemImage="plus.circle" action={() => addParam(i)} />
-
-              <FieldRow label="工具名">
-                <TextField
-                  title={t.name.trim() ? "英文，如 navigate_home" : `留空自动：${auto}`}
-                  value={t.name}
-                  autocorrectionDisabled
-                  textInputAutocapitalization="never"
-                  onChanged={(v: string) => update(i, { name: v })}
-                />
-              </FieldRow>
-              {!t.name.trim() ? (
-                <Text font="footnote" foregroundStyle="secondaryLabel">
-                  {autoWeak
-                    ? `「${t.shortcutName.trim()}」里没有英文字母，自动生成的工具名会是 ${auto}，模型不容易看懂 —— 建议填个英文名（如 navigate_home）。`
-                    : `模型看到的工具名会是 ${auto}。`}
-                </Text>
-              ) : null}
-              <Toggle
-                title="快捷指令会把结果回传给我"
-                value={t.returns === true}
-                onChanged={(v: boolean) => update(i, { returns: v })}
-              />
-
-              {t.parameters ? (
-                <VStack alignment="leading" spacing={6}>
-                  <Text font="footnote" foregroundStyle="secondaryLabel">
-                    {`这条用的是手写的完整参数 schema（比上面的表单参数优先级高），字段：${Object.keys(
-                      t.parameters?.properties ?? {},
-                    ).join("、") || "（没有声明字段）"}`}
-                  </Text>
-                  <Button
-                    title="改成表单参数（清掉高级 schema）"
-                    action={() => update(i, { parameters: undefined })}
-                  />
-                </VStack>
-              ) : null}
-
-              <Toggle
-                title="显示「快捷指令」那边怎么配"
-                value={hintOpen}
-                onChanged={(v: boolean) => setOpenHint(v ? t.id : "")}
-              />
-              {hintOpen ? (
-                <VStack alignment="leading" spacing={10} padding={{ vertical: 6 }}>
-                  <Text font="footnote" foregroundStyle="secondaryLabel">
-                    {stepsFor(shortcut, specs, t.returns === true)}
-                  </Text>
-                  <Button
-                    title="拷贝回调 URL"
-                    systemImage="link"
-                    action={() =>
-                      copyText(
-                        t.id,
-                        callbackURL(shortcut),
-                        "已拷贝回调 URL：在快捷指令里用「文本」动作粘上它，后面紧跟要回传的内容。",
-                      )
-                    }
-                  />
-                  {specs.length > 0 ? (
-                    <Button
-                      title="拷贝参数说明"
-                      systemImage="doc.on.clipboard"
-                      action={() =>
-                        copyText(t.id, paramsHelp(shortcut, specs), "已拷贝参数说明：照着在快捷指令里取字段。")
-                      }
-                    />
-                  ) : null}
-                  <Button
-                    title="拷贝完整说明（含回传）"
-                    systemImage="doc.text"
-                    action={() =>
-                      copyText(t.id, shortcutProtocolText(scriptName()), "已拷贝完整说明：贴进备忘录照着配。")
-                    }
-                  />
-                </VStack>
-              ) : null}
-
-              <Button title="试运行这条快捷指令" systemImage="play.circle" action={() => testRun(i)} />
-              {toolNote && toolNote.id === t.id ? (
-                <Text font="footnote" foregroundStyle="secondaryLabel">
-                  {toolNote.text}
-                </Text>
-              ) : null}
-              <Button title="删除这条工具" role="destructive" action={() => remove(i)} />
-            </Section>
-          )
-        })}
 
         <Section
           header={<Text>添加</Text>}
@@ -550,7 +378,7 @@ export function ToolsPage({ rows, onChange }: Props) {
                 调用时脚本把参数拼成 JSON 文本，作为快捷指令的输入传过去（没有参数就不传）。所以快捷指令里要先接住输入：「接收输入」→「从输入获取词典」→「获取词典值」按字段名取值。
               </Text>
               <Text>
-                默认是单向触发：模型只知道「已触发」，拿不到执行结果，也不会编造结果。想让模型看到结果，就打开「回传」开关，再按工具里的「显示『快捷指令』那边怎么配」加回传动作（里面有可一键拷贝的 URL）。
+                默认是单向触发：模型只知道「已触发」，拿不到执行结果，也不会编造结果。想让模型看到结果，就进工具详情打开「回传」开关，再按「显示『快捷指令』那边怎么配」加回传动作（里面有可一键拷贝的 URL）。
               </Text>
               <Text>
                 回传到达时（10 分钟内），结果会写回那张过程卡片（标「已回传」）并接着回复你——回传内容本身不会作为消息出现在聊天里；哪怕 App 之前被关掉，回调也会把它拉回来接上。
@@ -558,10 +386,278 @@ export function ToolsPage({ rows, onChange }: Props) {
             </VStack>
           }
         >
-          <Button title="＋ 添加一条工具" systemImage="plus.circle" action={add} />
-          {draft.length === 0 ? (
-            <Text foregroundStyle="secondaryLabel">还没有本地快捷指令工具</Text>
+          <Button title="＋ 添加快捷指令工具" systemImage="plus.circle" action={add} />
+        </Section>
+      </Form>
+    </VStack>
+  )
+}
+
+interface DetailProps {
+  /** 第几条（自动函数名要用它保持一致）。 */
+  index: number
+  initial: ToolRow
+  /** 改动推回列表页（列表页再推给设置页）。 */
+  onChange: (p: Partial<ToolRow>) => void
+  onDelete: () => void
+}
+
+/**
+ * 单条工具的详情页：原来铺在列表里的全部配置都在这里，一个不删。
+ * 用 NavigationLink 从列表推进来，所以不用再套 NavigationStack。
+ */
+export function ToolDetail({ index, initial, onChange, onDelete }: DetailProps) {
+  const [t, setT] = useState<ToolRow>({ ...initial, params: (initial.params ?? []).map((p) => ({ ...p })) })
+  /** 即时反馈（试运行结果 / 拷贝结果）。 */
+  const [note, setNote] = useState("")
+  const [hintOpen, setHintOpen] = useState(false)
+
+  function patch(p: Partial<ToolRow>) {
+    setT({ ...t, ...p })
+    onChange(p)
+  }
+
+  function addParam() {
+    patch({ params: [...(t.params ?? []), newParamDraft()] })
+  }
+
+  function updateParam(j: number, p: Partial<ParamDraft>) {
+    patch({ params: (t.params ?? []).map((x, idx) => (idx === j ? { ...x, ...p } : x)) })
+  }
+
+  function removeParam(j: number) {
+    patch({ params: (t.params ?? []).filter((_, idx) => idx !== j) })
+  }
+
+  /** 一键把「快捷指令」App 里拷来的名字贴上，省得手敲出细微差别。 */
+  async function pasteShortcutName() {
+    try {
+      const text = ((await Pasteboard.getString()) ?? "").trim()
+      const first = text.split(/\r?\n/)[0].trim()
+      if (!first) {
+        setNote("剪贴板是空的：先在「快捷指令」里长按那条快捷指令 → 拷贝，再回来点这个按钮。")
+        return
+      }
+      patch({ shortcutName: first })
+      setNote(`已粘贴名字：${first}`)
+    } catch (e: any) {
+      setNote("读剪贴板失败：" + (e?.message ?? String(e)))
+    }
+  }
+
+  async function copyText(text: string, msg: string) {
+    try {
+      await Pasteboard.setString(text)
+      setNote(msg)
+    } catch (e: any) {
+      setNote("写剪贴板失败：" + (e?.message ?? String(e)))
+    }
+  }
+
+  /** 真跑一次看看通不通：把样例参数当输入交给快捷指令。 */
+  async function testRun() {
+    const name = (t.shortcutName ?? "").trim()
+    if (!name) {
+      setNote("这条还没填快捷指令名，先在上面写上名字（要和「快捷指令」App 里一致）。")
+      return
+    }
+    const input = sampleArgsJSON(paramDraftsToSpecs(t.params ?? []))
+    try {
+      const ok = await Safari.openURL(runShortcutURL(name, input))
+      setNote(
+        ok
+          ? `已交给系统运行${input ? "，输入：" + input : "（不带输入）"}。要是没任何反应，就是名字和 App 里对不上。`
+          : "打不开这条快捷指令：名字多半写错了（要和「快捷指令」App 里完全一致）。",
+      )
+    } catch (e: any) {
+      setNote("打开失败：" + (e?.message ?? String(e)))
+    }
+  }
+
+  const params = t.params ?? []
+  const specs = paramDraftsToSpecs(params)
+  const auto = makeToolFunctionName("", t.shortcutName, index, new Set<string>()).name
+  /** 快捷指令名里没有英文字母时，自动函数名只能退化成 tool1 这种 —— 提醒用户自己起名。 */
+  const autoWeak = /^tool\d+$/.test(auto) && (t.shortcutName ?? "").trim().length > 0
+  const shortcut = (t.shortcutName ?? "").trim() || auto
+
+  return (
+    <VStack navigationTitle={toolTitle(t)} navigationBarTitleDisplayMode="inline">
+      <Form>
+        <Section
+          header={<Text>{`快捷指令工具 ${index + 1}`}</Text>}
+          footer={
+            <Text>
+              名字要和「快捷指令」App 里完全一致：可以手输，也可以先在那儿拷贝名字再点下面的按钮。
+            </Text>
+          }
+        >
+          <FieldRow label="快捷指令名">
+            <TextField
+              title="要和「快捷指令」App 里一致"
+              value={t.shortcutName}
+              onChanged={(v: string) => patch({ shortcutName: v })}
+            />
+          </FieldRow>
+          <Button
+            title="粘贴剪贴板里的名字"
+            systemImage="doc.on.clipboard"
+            action={pasteShortcutName}
+          />
+          <Text font="footnote" foregroundStyle="secondaryLabel">
+            名字对不上时「试运行」会打不开：去「快捷指令」App 里核对一下。
+          </Text>
+        </Section>
+
+        <Section header={<Text>模型看到的</Text>}>
+          <FieldRow label="说明">
+            <TextField
+              title="给模型看：这工具干什么"
+              value={t.description}
+              onChanged={(v: string) => patch({ description: v })}
+            />
+          </FieldRow>
+          <FieldRow label="工具名">
+            <TextField
+              title={t.name.trim() ? "英文，如 navigate_home" : `留空自动：${auto}`}
+              value={t.name}
+              autocorrectionDisabled
+              textInputAutocapitalization="never"
+              onChanged={(v: string) => patch({ name: v })}
+            />
+          </FieldRow>
+          {!t.name.trim() ? (
+            <Text font="footnote" foregroundStyle="secondaryLabel">
+              {autoWeak
+                ? `「${t.shortcutName.trim()}」里没有英文字母，自动生成的工具名会是 ${auto}，模型不容易看懂 —— 建议填个英文名（如 navigate_home）。`
+                : `模型看到的工具名会是 ${auto}。`}
+            </Text>
           ) : null}
+        </Section>
+
+        <Section
+          header={<Text>参数</Text>}
+          footer={
+            <Text>模型会把填了的参数拼成一段 JSON 文本传给快捷指令；字段名留空的行会被忽略。</Text>
+          }
+        >
+          {params.length === 0 ? (
+            <Text foregroundStyle="secondaryLabel">还没有参数。不需要参数的快捷指令可以不加。</Text>
+          ) : null}
+          {params.map((p, j) => (
+            <VStack key={p.id} spacing={6} padding={{ vertical: 6 }}>
+              <HStack spacing={8}>
+                <Text font="footnote" foregroundStyle="secondaryLabel">{`参数 ${j + 1}`}</Text>
+                <Spacer />
+                <Button title="删除" role="destructive" action={() => removeParam(j)} />
+              </HStack>
+              <FieldRow label="字段名">
+                <TextField
+                  title="英文，如 destination"
+                  value={p.name}
+                  autocorrectionDisabled
+                  textInputAutocapitalization="never"
+                  onChanged={(v: string) => updateParam(j, { name: v })}
+                />
+              </FieldRow>
+              <FieldRow label="说明">
+                <TextField
+                  title="给模型看，如「目的地名称」"
+                  value={p.description}
+                  onChanged={(v: string) => updateParam(j, { description: v })}
+                />
+              </FieldRow>
+              <FieldRow label="可选值">
+                <TextField
+                  title="留空不限，如 driving、walking"
+                  value={p.enumText}
+                  autocorrectionDisabled
+                  textInputAutocapitalization="never"
+                  onChanged={(v: string) => updateParam(j, { enumText: v })}
+                />
+              </FieldRow>
+              <Toggle
+                title={`参数 ${j + 1} 必填`}
+                value={p.required}
+                onChanged={(v: boolean) => updateParam(j, { required: v })}
+              />
+            </VStack>
+          ))}
+          <Button title="＋ 添加参数" systemImage="plus.circle" action={addParam} />
+
+          {t.parameters ? (
+            <VStack alignment="leading" spacing={6}>
+              <Text font="footnote" foregroundStyle="secondaryLabel">
+                {`这条用的是手写的完整参数 schema（比上面的表单参数优先级高），字段：${Object.keys(
+                  t.parameters?.properties ?? {},
+                ).join("、") || "（没有声明字段）"}`}
+              </Text>
+              <Button
+                title="改成表单参数（清掉高级 schema）"
+                action={() => patch({ parameters: undefined })}
+              />
+            </VStack>
+          ) : null}
+        </Section>
+
+        <Section
+          header={<Text>回传</Text>}
+          footer={
+            <Text>
+              开着「回传」时，快捷指令末尾要按提示加回传动作（「文本」+「URL
+              编码」+「打开 URL」），结果才会回到聊天里的过程卡片。
+            </Text>
+          }
+        >
+          <Toggle
+            title="快捷指令会把结果回传给我"
+            value={t.returns === true}
+            onChanged={(v: boolean) => patch({ returns: v })}
+          />
+          <Toggle
+            title="显示「快捷指令」那边怎么配"
+            value={hintOpen}
+            onChanged={(v: boolean) => setHintOpen(v)}
+          />
+          {hintOpen ? (
+            <VStack alignment="leading" spacing={10} padding={{ vertical: 6 }}>
+              <Text font="footnote" foregroundStyle="secondaryLabel">
+                {stepsFor(shortcut, specs, t.returns === true)}
+              </Text>
+              <Button
+                title="拷贝回调 URL"
+                systemImage="link"
+                action={() =>
+                  copyText(
+                    callbackURL(shortcut),
+                    "已拷贝回调 URL：在快捷指令里用「文本」动作粘上它，后面紧跟要回传的内容。",
+                  )
+                }
+              />
+              {specs.length > 0 ? (
+                <Button
+                  title="拷贝参数说明"
+                  systemImage="doc.on.clipboard"
+                  action={() => copyText(paramsHelp(shortcut, specs), "已拷贝参数说明：照着在快捷指令里取字段。")}
+                />
+              ) : null}
+              <Button
+                title="拷贝完整说明（含回传）"
+                systemImage="doc.text"
+                action={() => copyText(shortcutProtocolText(scriptName()), "已拷贝完整说明：贴进备忘录照着配。")}
+              />
+            </VStack>
+          ) : null}
+        </Section>
+
+        <Section>
+          <Button title="试运行这条快捷指令" systemImage="play.circle" action={testRun} />
+          {note ? (
+            <Text font="footnote" foregroundStyle="secondaryLabel">
+              {note}
+            </Text>
+          ) : null}
+          <Button title="删除这条工具" role="destructive" action={onDelete} />
         </Section>
       </Form>
     </VStack>

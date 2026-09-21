@@ -1,8 +1,40 @@
 import {
-  Button, Form, Section, SecureField, Text, TextField, Toggle, VStack, useState,
+  Button, Form, HStack, NavigationLink, Section, SecureField, Text, TextField, Toggle, VStack, useState,
 } from "scripting"
 import { McpServer, makeMcpServer, mcpServersToJson, parseMcpServersJson } from "./agent_store"
 import { listMcpTools } from "./mcp_client"
+
+/** 从地址里抠出主机名，列表里当一行摘要用。 */
+function hostOf(url: string): string {
+  const t = (url ?? "").trim()
+  if (!t) return "还没填地址"
+  const m = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(t)
+  return m ? m[1] : t
+}
+
+/** 列表行的标题：优先用名字，没填就退回主机名。 */
+function serverTitle(m: McpServer): string {
+  const name = (m.name ?? "").trim()
+  if (name) return name
+  const url = (m.url ?? "").trim()
+  return url ? hostOf(url) : "（未命名）"
+}
+
+/** 列表行的一行摘要：地址 + 状态。 */
+function serverSubtitle(m: McpServer): string {
+  const url = (m.url ?? "").trim()
+  if (!url) return "还没填地址"
+  const bits: string[] = [hostOf(url), m.enabled ? "已启用" : "已停用"]
+  if ((m.token ?? "").trim()) bits.push("带令牌")
+  return bits.join(" · ")
+}
+
+/** 搜索匹配：名称 / 地址，大小写不敏感。 */
+function matchesServer(m: McpServer, query: string): boolean {
+  const needle = (query ?? "").trim().toLowerCase()
+  if (!needle) return true
+  return [m.name, m.url].some((s) => ((s ?? "") as string).toLowerCase().indexOf(needle) >= 0)
+}
 
 interface Props {
   /** 设置页里当前的服务器草稿。 */
@@ -12,12 +44,12 @@ interface Props {
 }
 
 /**
- * 「MCP 服务器」子页：粘贴 JSON 导入、逐台编辑、测试连接。
+ * 「MCP 服务器」子页：上面搜索框，中间服务器列表，点一台进详情页配。
  * 由设置页用 NavigationLink 推进来，所以这里**不用**再套 NavigationStack。
  */
 export function McpPage({ servers, onChange }: Props) {
   const [draft, setDraft] = useState<McpServer[]>(servers.map((s) => ({ ...s })))
-  const [testing, setTesting] = useState("")
+  const [query, setQuery] = useState("")
   const [json, setJson] = useState("")
   const [note, setNote] = useState("")
 
@@ -86,45 +118,88 @@ export function McpPage({ servers, onChange }: Props) {
     }
   }
 
-  /** 测试连接：真发一次 initialize + tools/list，把工具名列出来。 */
-  async function testServer(m: McpServer) {
-    const url = (m.url ?? "").trim()
-    if (!url) {
-      Dialog.alert({ message: "先填服务器地址，比如 https://example.com/mcp" })
-      return
-    }
-    setTesting(m.id)
-    try {
-      const list = await listMcpTools(
-        { ...m, url, name: m.name.trim() || m.id, enabled: true },
-        true,
-      )
-      if (list.error) {
-        Dialog.alert({ title: "连接失败", message: list.error })
-        return
-      }
-      if (list.tools.length === 0) {
-        Dialog.alert({ title: "连接成功", message: "连上了，但服务器没有提供任何工具。" })
-        return
-      }
-      const names = list.tools.slice(0, 12).map((t) => "· " + t.name).join("\n")
-      const more = list.tools.length > 12 ? `\n…另外 ${list.tools.length - 12} 个` : ""
-      Dialog.alert({
-        title: "连接成功",
-        message: `拿到 ${list.tools.length} 个工具：\n${names}${more}`,
-      })
-    } catch (e: any) {
-      Dialog.alert({ title: "测试失败", message: e?.message ?? String(e) })
-    } finally {
-      setTesting("")
-    }
-  }
-
+  const indexed = draft.map((m, i) => ({ m, i }))
+  const shown = indexed.filter((x) => matchesServer(x.m, query))
   const enabledCount = draft.filter((m) => m.enabled && (m.url ?? "").trim()).length
 
   return (
-    <VStack navigationTitle="MCP 服务器" navigationBarTitleDisplayMode="inline">
+    <VStack
+      navigationTitle="MCP 服务器"
+      navigationBarTitleDisplayMode="inline"
+      searchable={{
+        value: query,
+        onChanged: setQuery,
+        placement: "navigationBarDrawerAlwaysDisplay",
+        prompt: "搜名称 / 地址",
+      }}
+    >
       <Form>
+        <Section
+          header={<Text>{draft.length > 0 ? `服务器 ${draft.length} 台` : "MCP 服务器"}</Text>}
+          footer={<Text>点一台进去才是它的详细配置。改完回设置页点「保存」才会生效。</Text>}
+        >
+          {draft.length === 0 ? (
+            <Text foregroundStyle="secondaryLabel">还没有 MCP 服务器，用下面的「添加服务器」加一台。</Text>
+          ) : shown.length === 0 ? (
+            <Text foregroundStyle="secondaryLabel">{`没有名字或地址里带「${query.trim()}」的服务器。`}</Text>
+          ) : (
+            shown.map(({ m, i }) => (
+              <NavigationLink
+                key={m.id}
+                destination={
+                  <McpDetail
+                    index={i}
+                    initial={m}
+                    onChange={(p) => update(m.id, p)}
+                    onDelete={() => removeServer(m.id)}
+                  />
+                }
+              >
+                <VStack alignment="leading" spacing={3} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+                  <HStack spacing={6}>
+                    <Text fontWeight="semibold" foregroundStyle="label">
+                      {serverTitle(m)}
+                    </Text>
+                    {m.enabled ? null : (
+                      <Text font="caption2" foregroundStyle="secondaryLabel">
+                        {"已停用"}
+                      </Text>
+                    )}
+                  </HStack>
+                  <Text font="footnote" foregroundStyle="secondaryLabel">
+                    {serverSubtitle(m)}
+                  </Text>
+                </VStack>
+              </NavigationLink>
+            ))
+          )}
+        </Section>
+
+        <Section
+          header={<Text>添加 / 说明</Text>}
+          footer={
+            <VStack alignment="leading" spacing={4}>
+              <Text>
+                MCP（模型上下文协议）服务器能提供一批带真返回值的工具，比快捷指令更完整：模型能拿到结果再回答你。
+              </Text>
+              <Text>
+                只支持远程 HTTP 类型（地址形如 https://example.com/mcp）。需要本地跑命令的 stdio 型服务器连不了：iOS 沙箱里没有常驻子进程管道。
+              </Text>
+              <Text>
+                不想每次都去连，可以在详情页先把「启用」关掉；工具清单会缓存 5 分钟，改完配置点「测试连接」会强制重新拉一次。
+              </Text>
+              <Text>改完回设置页点「保存」才会生效。</Text>
+            </VStack>
+          }
+        >
+          <Text font="footnote" foregroundStyle="secondaryLabel">
+            {draft.length > 0
+              ? `${draft.length} 台服务器，启用 ${enabledCount} 台`
+              : "还没有 MCP 服务器"}
+          </Text>
+          <Button title="添加服务器" systemImage="plus.circle.fill" action={addServer} />
+        </Section>
+
         <Section
           header={<Text>从 JSON 导入</Text>}
           footer={
@@ -163,81 +238,116 @@ export function McpPage({ servers, onChange }: Props) {
             </Text>
           ) : null}
         </Section>
+      </Form>
+    </VStack>
+  )
+}
 
-        {draft.map((m, i) => (
-          <Section
-            key={m.id}
-            header={<Text>{`MCP 服务器 ${i + 1}${m.name.trim() ? " · " + m.name.trim() : ""}`}</Text>}
-          >
-            <TextField
-              title="名称"
-              value={m.name}
-              prompt="如 deepwiki"
-              onChanged={(v) => update(m.id, { name: v })}
-            />
-            <TextField
-              title="地址"
-              value={m.url}
-              prompt="https://example.com/mcp"
-              autocorrectionDisabled
-              textInputAutocapitalization="never"
-              onChanged={(v) => update(m.id, { url: v })}
-            />
-            <SecureField
-              title="令牌"
-              value={m.token ?? ""}
-              prompt="可选，Bearer Token"
-              autocorrectionDisabled
-              textInputAutocapitalization="never"
-              onChanged={(v) => update(m.id, { token: v })}
-            />
-            <TextField
-              title="额外请求头"
-              value={m.headersHint ?? ""}
-              prompt={"可选，每行一个\nHeader: Value"}
-              axis="vertical"
-              lineLimit={{ min: 1, max: 4 }}
-              autocorrectionDisabled
-              textInputAutocapitalization="never"
-              onChanged={(v) => update(m.id, { headersHint: v })}
-            />
-            <Toggle
-              title="启用"
-              value={m.enabled}
-              onChanged={(v) => update(m.id, { enabled: v })}
-            />
-            <Button
-              title={testing === m.id ? "正在测试…" : "测试连接"}
-              disabled={testing !== ""}
-              action={() => testServer(m)}
-            />
-            <Button title="删除这个服务器" role="destructive" action={() => removeServer(m.id)} />
-          </Section>
-        ))}
+interface DetailProps {
+  index: number
+  initial: McpServer
+  /** 改动推回列表页（列表页再推给设置页）。 */
+  onChange: (p: Partial<McpServer>) => void
+  onDelete: () => void
+}
+
+/** 一台服务器的详情页：名称 / 地址 / 令牌 / 请求头 / 启用 / 测试连接。 */
+export function McpDetail({ index, initial, onChange, onDelete }: DetailProps) {
+  const [m, setM] = useState<McpServer>({ ...initial })
+  const [testing, setTesting] = useState(false)
+
+  function patch(p: Partial<McpServer>) {
+    setM({ ...m, ...p })
+    onChange(p)
+  }
+
+  /** 测试连接：真发一次 initialize + tools/list，把工具名列出来。 */
+  async function testServer() {
+    const url = (m.url ?? "").trim()
+    if (!url) {
+      Dialog.alert({ message: "先填服务器地址，比如 https://example.com/mcp" })
+      return
+    }
+    setTesting(true)
+    try {
+      const list = await listMcpTools(
+        { ...m, url, name: (m.name ?? "").trim() || m.id, enabled: true },
+        true,
+      )
+      if (list.error) {
+        Dialog.alert({ title: "连接失败", message: list.error })
+        return
+      }
+      if (list.tools.length === 0) {
+        Dialog.alert({ title: "连接成功", message: "连上了，但服务器没有提供任何工具。" })
+        return
+      }
+      const names = list.tools.slice(0, 12).map((t) => "· " + t.name).join("\n")
+      const more = list.tools.length > 12 ? `\n…另外 ${list.tools.length - 12} 个` : ""
+      Dialog.alert({
+        title: "连接成功",
+        message: `拿到 ${list.tools.length} 个工具：\n${names}${more}`,
+      })
+    } catch (e: any) {
+      Dialog.alert({ title: "测试失败", message: e?.message ?? String(e) })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  return (
+    <VStack navigationTitle={serverTitle(m)} navigationBarTitleDisplayMode="inline">
+      <Form>
+        <Section header={<Text>{`MCP 服务器 ${index + 1}`}</Text>} footer={<Text>名称只是给你自己看的，模型看到的是服务器提供的工具清单。</Text>}>
+          <TextField
+            title="名称"
+            value={m.name}
+            prompt="如 deepwiki"
+            onChanged={(v) => patch({ name: v })}
+          />
+          <TextField
+            title="地址"
+            value={m.url}
+            prompt="https://example.com/mcp"
+            autocorrectionDisabled
+            textInputAutocapitalization="never"
+            onChanged={(v) => patch({ url: v })}
+          />
+          <SecureField
+            title="令牌"
+            value={m.token ?? ""}
+            prompt="可选，Bearer Token"
+            autocorrectionDisabled
+            textInputAutocapitalization="never"
+            onChanged={(v) => patch({ token: v })}
+          />
+          <TextField
+            title="额外请求头"
+            value={m.headersHint ?? ""}
+            prompt={"可选，每行一个\nHeader: Value"}
+            axis="vertical"
+            lineLimit={{ min: 1, max: 4 }}
+            autocorrectionDisabled
+            textInputAutocapitalization="never"
+            onChanged={(v) => patch({ headersHint: v })}
+          />
+        </Section>
 
         <Section
-          header={<Text>添加 / 说明</Text>}
+          header={<Text>连接</Text>}
           footer={
-            <VStack alignment="leading" spacing={4}>
-              <Text>
-                MCP（模型上下文协议）服务器能提供一批带真返回值的工具，比快捷指令更完整：模型能拿到结果再回答你。
-              </Text>
-              <Text>
-                只支持远程 HTTP 类型（地址形如 https://example.com/mcp）。需要本地跑命令的 stdio 型服务器连不了：iOS 沙箱里没有常驻子进程管道。
-              </Text>
-              <Text>
-                不想每次都去连，可以先把「启用」关掉；工具清单会缓存 5 分钟，改完配置点「测试连接」会强制重新拉一次。
-              </Text>
-              <Text>改完回设置页点「保存」才会生效。</Text>
-            </VStack>
+            <Text>
+              工具清单会缓存 5 分钟；「测试连接」会强制重新拉一次。改完回设置页点「保存」才会生效。
+            </Text>
           }
         >
-          <Text font="footnote" foregroundStyle="secondaryLabel">
-            {draft.length > 0
-              ? `${draft.length} 台服务器，启用 ${enabledCount} 台`
-              : "还没有 MCP 服务器"}
-          </Text>
-          <Button title="添加服务器" systemImage="plus.circle.fill" action={addServer} />
+          <Toggle title="启用" value={m.enabled} onChanged={(v) => patch({ enabled: v })} />
+          <Button
+            title={testing ? "正在测试…" : "测试连接"}
+            disabled={testing}
+            action={testServer}
+          />
+          <Button title="删除这个服务器" role="destructive" action={onDelete} />
         </Section>
       </Form>
     </VStack>
