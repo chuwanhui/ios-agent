@@ -38,6 +38,10 @@ export interface KbDoc {
   chars: number
   chunks: number
   addedAt: number
+  /** `folder:<书签名>` = 来自外挂文件夹；空 = 从「知识库」文件夹导入的。 */
+  origin?: string
+  /** 外挂文件夹里的原始路径（只读，不动原文件）。 */
+  path?: string
 }
 
 export interface KbIndex {
@@ -500,6 +504,206 @@ export function deleteKbDoc(docId: string): void {
 export function clearKb(): void {
   saveKbIndex(emptyIndex())
   clearVectors()
+}
+
+// —— 导入：从「文件」App 选文件 / 挂一个外部文件夹（只读） ——
+
+/** 外挂文件夹：书签持久化，重启后仍能读到（书签失效就要重新选一次）。 */
+export interface KbFolder {
+  /** 书签名（`FileManager.bookmarkedPath(bookmark)` 取回路径）。 */
+  bookmark: string
+  label: string
+  path: string
+  addedAt: number
+}
+
+const FOLDER_FILE = KB_DIR + "/folders.json"
+const FOLDER_SKIP = ["node_modules", ".git", ".obsidian", ".trash", "已导入", "Library"]
+const FOLDER_MAX_FILES = 300
+const FOLDER_MAX_DEPTH = 5
+
+let folderCache: KbFolder[] | null = null
+
+export function listKbFolders(): KbFolder[] {
+  if (folderCache) return folderCache
+  let out: KbFolder[] = []
+  try {
+    if (FileManager.existsSync(FOLDER_FILE)) {
+      const parsed = JSON.parse(FileManager.readAsStringSync(FOLDER_FILE))
+      if (Array.isArray(parsed)) out = parsed as KbFolder[]
+    }
+  } catch {
+    out = []
+  }
+  folderCache = out
+  return out
+}
+
+function saveKbFolders(list: KbFolder[]): void {
+  try {
+    FileManager.createDirectorySync(KB_DIR, true)
+    FileManager.writeAsStringSync(FOLDER_FILE, JSON.stringify(list))
+  } catch {
+    // ignore
+  }
+  folderCache = list
+}
+
+export function addKbFolder(bookmark: string, label: string, path: string): KbFolder {
+  const list = listKbFolders().filter((f) => f.bookmark !== bookmark)
+  const folder: KbFolder = { bookmark, label: label || bookmark, path, addedAt: Date.now() }
+  list.push(folder)
+  saveKbFolders(list)
+  return folder
+}
+
+/** 忘掉一个外挂文件夹：连同它索引进去的资料一起删（原文件夹不动）。 */
+export function removeKbFolder(bookmark: string): void {
+  saveKbFolders(listKbFolders().filter((f) => f.bookmark !== bookmark))
+  dropOriginDocs("folder:" + bookmark)
+  try {
+    FileManager.removeFileBookmark(bookmark)
+  } catch {
+    // ignore
+  }
+}
+
+/** 删掉某个来源（外挂文件夹）上一次索引的资料。 */
+function dropOriginDocs(origin: string): void {
+  const idx = loadKbIndex(true)
+  const dead: string[] = []
+  for (const d of idx.docs) if (d.origin === origin) dead.push(d.id)
+  if (dead.length === 0) return
+  idx.docs = idx.docs.filter((d) => d.origin !== origin)
+  idx.chunks = idx.chunks.filter((c) => dead.indexOf(c.docId) < 0)
+  saveKbIndex(idx)
+  pruneVectors()
+}
+
+function walkFolder(dir: string, out: string[], depth: number): void {
+  if (depth > FOLDER_MAX_DEPTH || out.length >= FOLDER_MAX_FILES) return
+  for (const p of ls(dir).sort()) {
+    const name = baseName(p)
+    if (!name || name.startsWith(".") || FOLDER_SKIP.indexOf(name) >= 0) continue
+    let isDir = false
+    try {
+      isDir = FileManager.isDirectorySync(p)
+    } catch {
+      isDir = false
+    }
+    if (isDir) walkFolder(p, out, depth + 1)
+    else out.push(p)
+    if (out.length >= FOLDER_MAX_FILES) return
+  }
+}
+
+/**
+ * 重新索引一个外挂文件夹（只读、不动原文件）：
+ * 先把它上一次索引的资料删掉，再按当前内容重建 —— 改了、删了文件都会反映过来。
+ */
+export async function importKbFolder(
+  folder: KbFolder,
+  onProgress?: (text: string) => void,
+): Promise<KbImportResult> {
+  const res: KbImportResult = { added: [], skipped: [], errors: [] }
+  const root = FileManager.bookmarkedPath(folder.bookmark)
+  if (!root) {
+    res.errors.push(`「${folder.label}」的书签已失效，删掉重新选一次文件夹吧。`)
+    return res
+  }
+
+  const idx = loadKbIndex(true)
+  const origin = "folder:" + folder.bookmark
+  const dead: string[] = []
+  for (const d of idx.docs) if (d.origin === origin) dead.push(d.id)
+  idx.docs = idx.docs.filter((d) => d.origin !== origin)
+  idx.chunks = idx.chunks.filter((c) => dead.indexOf(c.docId) < 0)
+
+  const files: string[] = []
+  walkFolder(root, files, 0)
+  if (files.length >= FOLDER_MAX_FILES) {
+    res.skipped.push(`文件夹里文件太多，这次只索引前 ${FOLDER_MAX_FILES} 个`)
+  }
+
+  const prefix = root.replace(/\/+$/, "") + "/"
+  for (const p of files) {
+    const shown = p.indexOf(prefix) === 0 ? p.slice(prefix.length) : baseName(p)
+    onProgress?.(`正在读取「${shown}」…`)
+    let text: string | null = null
+    try {
+      text = await readDocText(p)
+    } catch (e: any) {
+      res.errors.push(`${shown}：${e?.message ?? "读取失败"}`)
+      continue
+    }
+    if (text == null) {
+      res.skipped.push(`${shown}（格式不支持或扫描版 PDF）`)
+      continue
+    }
+    const chunks = chunkText(text)
+    if (chunks.length === 0) {
+      res.skipped.push(`${shown}（没提取到文字）`)
+      continue
+    }
+    const docId = "d" + Date.now().toString(36) + rand36(4)
+    const title = shown.replace(/\.[^.]+$/, "")
+    for (let i = 0; i < chunks.length; i++) {
+      idx.chunks.push({ id: `${docId}_${i}`, docId, title, text: chunks[i] })
+    }
+    const doc: KbDoc = {
+      id: docId,
+      title,
+      source: `${folder.label} / ${shown}`,
+      chars: text.length,
+      chunks: chunks.length,
+      addedAt: Date.now(),
+      origin,
+      path: p,
+    }
+    idx.docs.push(doc)
+    res.added.push(doc)
+  }
+
+  saveKbIndex(idx)
+  pruneVectors()
+  return res
+}
+
+/** 把用户在「文件」App 选中的文件拷进「知识库」文件夹，再走一遍普通导入。 */
+export async function importKbFiles(
+  paths: string[],
+  onProgress?: (text: string) => void,
+): Promise<KbImportResult> {
+  const res: KbImportResult = { added: [], skipped: [], errors: [] }
+  try {
+    FileManager.createDirectorySync(KB_INBOX, true)
+  } catch {
+    // ignore
+  }
+  let staged = 0
+  for (const p of paths) {
+    const name = baseName(p)
+    if (!name) continue
+    const ext = extOf(name)
+    if (TEXT_EXT.indexOf(ext) < 0 && ext !== "pdf") {
+      res.skipped.push(`${name}（不支持的格式，只支持 txt/md/json/csv/log/pdf）`)
+      continue
+    }
+    const dest = KB_INBOX + "/" + uniqueName(KB_INBOX, name)
+    try {
+      await FileManager.copyFile(p, dest)
+      staged += 1
+    } catch (e: any) {
+      res.errors.push(`${name}：拷贝失败（${e?.message ?? e}）`)
+    }
+  }
+  if (staged === 0) return res
+  onProgress?.("正在导入…")
+  const done = await importKbInbox(onProgress)
+  res.added.push(...done.added)
+  res.skipped.push(...done.skipped)
+  res.errors.push(...done.errors)
+  return res
 }
 
 // —— 检索（BM25） ——

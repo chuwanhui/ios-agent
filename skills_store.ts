@@ -267,7 +267,7 @@ function findSkillFile(dir: string): string | null {
 }
 
 /** 压缩包解开后，找出真正的技能根目录（含 SKILL.md 的那一层）。 */
-function findSkillRoot(dir: string, depth = 0): string | null {
+export function findSkillRoot(dir: string, depth = 0): string | null {
   if (findSkillFile(dir)) return dir
   if (depth >= 2) return null
   const entries = ls(dir)
@@ -448,6 +448,43 @@ function installFromMarkdown(
   res.added.push(meta)
 }
 
+/** 把用户从「文件」App 选中的技能包（zip / md）拷进「技能」文件夹，等「扫描并导入」处理。 */
+export function stageSkillFile(srcPath: string): string | null {
+  const name = baseName(srcPath)
+  if (!name) return null
+  try {
+    FileManager.createDirectorySync(SKILL_INBOX, true)
+  } catch {
+    // ignore
+  }
+  const dest = SKILL_INBOX + "/" + uniqueName(SKILL_INBOX, name)
+  try {
+    FileManager.copyFileSync(srcPath, dest)
+    return dest
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 把一个**已经在本机的技能文件夹**装进技能库（zip 解开后 / git 仓库下载后都走这里）。
+ * 不移动、不删除源目录，装完返回新技能的元数据。
+ */
+export function installSkillFolder(srcDir: string): { added?: SkillMeta; reason?: string } {
+  const reg = loadRegistry(true)
+  const used = new Set<string>(reg.skills.map((s) => s.dir))
+  const res: SkillImportResult = { added: [], skipped: [], errors: [] }
+  try {
+    FileManager.createDirectorySync(SKILLS_DIR, true)
+  } catch {
+    // ignore
+  }
+  installFromDir(srcDir, baseName(srcDir), reg, used, res)
+  saveRegistry(reg)
+  if (res.added.length > 0) return { added: res.added[0] }
+  return { reason: res.skipped[0] ?? res.errors[0] ?? "没找到 SKILL.md" }
+}
+
 // —— 使用 / 维护 ——
 
 export function skillDirOf(meta: SkillMeta): string {
@@ -507,8 +544,9 @@ export function setSkillEnabled(id: string, enabled: boolean): void {
  * 渐进式披露：只在系统提示里列出技能名 + 描述，
  * 模型要用时再调 read_skill 读全文。没有可用技能时返回 null。
  */
-export function skillsPrompt(): string | null {
-  const list = listSkills().filter((s) => s.enabled)
+export function skillsPrompt(onlyIds?: string[]): string | null {
+  const allow = onlyIds && onlyIds.length > 0 ? new Set(onlyIds) : null
+  const list = listSkills().filter((s) => s.enabled && (!allow || allow.has(s.id)))
   if (list.length === 0) return null
   const lines = list.map((s) => {
     const desc = s.description ? s.description.replace(/\s+/g, " ").slice(0, 200) : "（没有写描述）"
@@ -522,7 +560,7 @@ export function skillsPrompt(): string | null {
 }
 
 /** 技能在系统提示里占的字符数（用于设置页展示）。 */
-export function skillsPromptSize(): number {
-  const p = skillsPrompt()
+export function skillsPromptSize(onlyIds?: string[]): number {
+  const p = skillsPrompt(onlyIds)
   return p ? p.length : 0
 }

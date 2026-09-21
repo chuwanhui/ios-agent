@@ -3,12 +3,14 @@ import {
   Text, TextField, Toolbar, ToolbarItem, VStack, ZStack, useState,
 } from "scripting"
 import {
-  AgentConfig, ChatMessage, SessionStore, TokenUsage, ToolStep, capMessages, deriveTitle, loadConfig,
-  loadStore, makeSession, removeSession, saveStore, upsertSession, withCurrentSession,
+  AgentConfig, ChatMessage, SessionMounts, SessionStore, TokenUsage, ToolStep, capMessages,
+  deriveTitle, effectiveConfig, loadConfig, loadStore, makeSession, removeSession, saveStore,
+  upsertSession, withCurrentSession,
 } from "./agent_store"
 import { dictate, runAgent, toolKindLabel } from "./agent_core"
 import { finishActivity, rememberReply, startThinking, updateThinking } from "./live_activity"
 import { ConfigPage } from "./config_page"
+import { MountPage, mountChips } from "./mount_page"
 import { VoicePage } from "./voice_page"
 import { DRAWER_WIDTH, Sidebar } from "./sidebar"
 import { Avatar, AvatarSpec } from "./avatar"
@@ -275,6 +277,7 @@ export function ChatPage() {
   const [input, setInput] = useState("")
   const [busy, setBusy] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showMounts, setShowMounts] = useState(false)
   const [showVoice, setShowVoice] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   // 正在跑的这一轮的过程（实时画在聊天流里，结束后随消息落库）。
@@ -293,6 +296,12 @@ export function ChatPage() {
   function closeSettings() {
     setShowSettings(false)
     setCfg(loadConfig())
+  }
+
+  /** 会话级挂载：改了就跟着这个会话一起存（历史 / 挂载都在一起）。 */
+  function setMounts(next?: SessionMounts) {
+    const base = current ?? makeSession()
+    apply(upsertSession(store, { ...base, mounts: next }))
   }
 
   function openSettings() {
@@ -375,7 +384,9 @@ export function ChatPage() {
     }
 
     try {
-      const { reply, newHistory } = await runAgent(trimmed, cfg, base.messages, {
+      // 会话级挂载在这里生效：工具 / MCP / 技能 / 知识库都按这个会话挂的来
+      const eff = effectiveConfig(cfg, base.mounts)
+      const { reply, newHistory } = await runAgent(trimmed, eff, base.messages, {
         onEvent: (e) => {
           // 调工具前可能擦过一句开场白，它不在最终回答里，清掉免得一闪就没
           pendingText = ""
@@ -478,14 +489,28 @@ export function ChatPage() {
             </ToolbarItem>
           </Toolbar>
         }
-        sheet={{
-          content: <ConfigPage onClose={closeSettings} />,
-          isPresented: showSettings,
-          onChanged: (v: boolean) => {
-            setShowSettings(v)
-            if (!v) setCfg(loadConfig())
+        sheet={[
+          {
+            content: <ConfigPage onClose={closeSettings} />,
+            isPresented: showSettings,
+            onChanged: (v: boolean) => {
+              setShowSettings(v)
+              if (!v) setCfg(loadConfig())
+            },
           },
-        }}
+          {
+            content: (
+              <MountPage
+                cfg={cfg}
+                mounts={current?.mounts}
+                onChange={setMounts}
+                onClose={() => setShowMounts(false)}
+              />
+            ),
+            isPresented: showMounts,
+            onChanged: setShowMounts,
+          },
+        ]}
         fullScreenCover={{
           content: (
             <VoicePage
@@ -532,7 +557,29 @@ export function ChatPage() {
           </VStack>
         </ScrollView>
 
+        {current?.mounts ? (
+          <ScrollView axes="horizontal">
+            <HStack spacing={6} padding={{ horizontal: 12 }}>
+              <Button action={() => setShowMounts(true)}>
+                <Text font="caption2" foregroundStyle="tertiaryLabel">本轮挂载</Text>
+              </Button>
+              {mountChips(current.mounts).map((c) => (
+                <Button key={c.key} action={() => setShowMounts(true)}>
+                  <Text font="caption2" foregroundStyle="secondaryLabel">{c.label}</Text>
+                </Button>
+              ))}
+            </HStack>
+          </ScrollView>
+        ) : null}
+
         <HStack spacing={8} padding={{ horizontal: 12, top: 8, bottom: 10 }}>
+          <Button action={() => setShowMounts(true)} disabled={busy}>
+            <Image
+              systemName="plus.circle.fill"
+              font="title2"
+              foregroundStyle={current?.mounts ? "systemBlue" : "tertiaryLabel"}
+            />
+          </Button>
           <HStack
             padding={{ horizontal: 14, vertical: 9 }}
             background="tertiarySystemFill"

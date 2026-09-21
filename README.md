@@ -19,8 +19,12 @@
 | **MCP 工具** | 远程 MCP 服务器（Streamable HTTP），带**返回值**的 JSON-RPC 工具 |
 | **知识库** | 纯本机离线全文检索（中文 bigram + BM25，纯 JS）；支持 txt / md / json / csv / log / pdf |
 | **语义检索（可选）** | 接一个 OpenAI 兼容的 `/embeddings` 接口（如 e5 / bge-m3），BM25 与向量余弦**混合排序**；不配就自动退回纯关键词，配了也不影响离线可用 |
-| **技能（skill）** | 上传含 `SKILL.md` 的文件夹或 zip；渐进式披露 + `read_skill` 按需读取 |
-| **灵动岛** | 思考中 / 完成 / 出错的状态指示（Live Activity）|
+| **技能（skill）** | 上传含 `SKILL.md` 的文件夹或 zip，或直接从 Git 仓库（GitHub / GitLab，可指向子目录）安装；渐进式披露 + `read_skill` 按需读取 |
+| **文件导入** | 知识库 / 技能页用系统「文件」选择器直接上传（支持多选），不必先拷进收件箱 |
+| **挂载外部文件夹** | 知识库可用安全作用域书签挂一个外部目录（如 Obsidian 库），只读索引、原文件不动，之后点「更新索引」增量同步 |
+| **MCP 批量导入** | 粘贴 MCP 客户端的 `mcpServers` JSON（Claude Desktop / VS Code / Cursor 等格式）一次导入多台服务器；stdio 型会明确拒绝 |
+| **会话级挂载** | 每个会话单独选这一轮要用哪些能力（快捷指令工具 / MCP / 知识库 / 技能），跟历史一起存；不选就沿用设置里的默认 |
+| **灵动岛** | 思考中 / 完成 / 出错的状态指示，展开卡片上还有**停止朗读 / 再念一遍**按钮（Live Activity + AppIntent）|
 | **快捷指令 App 集成** | 通过「运行脚本」动作 + Siri 调用，`intent.tsx` 入口自动听写并朗读 |
 
 ## 安装
@@ -30,9 +34,9 @@
 3. 可选：
    - 设置 → 角色：改助手名字，点「从相册选择照片」或「拍一张照片」给它换个真头像
    - 设置 → 添加 MCP 服务器（例如 `https://mcp.deepwiki.com/mcp`）
-   - 设置 → 知识库：把资料丢进「文件」App 的 `Scripting/知识库`，再点「扫描并导入」
+   - 设置 → 知识库：点「从文件上传」直接选（可多选），或把资料丢进「文件」App 的 `Scripting/知识库` 再点「扫描并导入」；也可以「挂载文件夹」指到一个外部目录（如 Obsidian / iCloud 里的资料库），之后点「更新索引」即可
    - 可选：设置 → 知识库语义检索，填向量接口地址 / 模型（如硅基流动 + `BAAI/bge-m3`），保存后到知识库页点「为知识库建向量」
-   - 设置 → 技能：把含 `SKILL.md` 的文件夹或 zip 丢进 `Scripting/技能`，再点「扫描并导入」
+   - 设置 → 技能：上传含 `SKILL.md` 的 zip / md，或填 `owner/repo`（仓库 URL 也行）从 Git 仓库安装；也可以把文件夹丢进 `Scripting/技能` 再点「扫描并导入」
    - 设置 → 添加工具：填快捷指令名（参数用每行 `字段名=说明` 声明）
 4. 在「快捷指令」App 里用「运行脚本」动作选中本脚本，即可接给 Siri 使用。
 
@@ -46,23 +50,30 @@
 ├── voice_page.tsx       语音通话模式
 ├── sidebar.tsx          左侧抽屉
 ├── avatar.tsx           角色头像（照片 / emoji，选图落盘）
-├── config_page.tsx      设置页
-├── kb_page.tsx          知识库管理页
-├── skills_page.tsx      技能管理页
+├── config_page.tsx      设置页（子页入口）
+├── tools_page.tsx       本地快捷指令工具子页
+├── mcp_page.tsx         MCP 服务器子页（粘贴 JSON 导入 / 编辑 / 测试连接）
+├── mount_page.tsx       会话级挂载面板（这一轮要用哪些能力）
+├── kb_page.tsx          知识库管理页（上传 / 挂载文件夹）
+├── skills_page.tsx      技能管理页（上传 / 从 Git 仓库安装）
 ├── intent.tsx           快捷指令 / Siri 入口
 ├── live_activity.tsx    灵动岛 Live Activity
+├── app_intents.tsx      灵动岛按钮的 AppIntent（停止朗读 / 再念一遍）
 ├── agent_core.ts        DeepSeek 请求（流式 SSE + 工具循环）
 ├── mcp_client.ts        MCP 客户端（JSON-RPC over Streamable HTTP）
 ├── kb_store.ts          知识库（bigram + BM25 + 向量索引与混合排序）
 ├── kb_embed.ts          知识库 ↔ 向量服务的胶水层（增量建向量 / 查询向量 / 失败降级）
 ├── embed_client.ts      OpenAI 兼容的 /embeddings 客户端
 ├── skills_store.ts      技能导入 / 注册表 / 渐进式披露
+├── repo_import.ts       从 Git 仓库安装技能（下载 zip → 找 SKILL.md → 安装）
 └── agent_store.ts       配置 + 会话存储
 ```
 
 ## 数据与隐私
 
 - **API Key 不在本仓库里**：配置存在 `<AppGroup>/Documents/agent/config.json`，会话在 `sessions.json`（其中存有每轮的 token 用量），知识库索引在 `kb/index.json`，技能在 `skills.json` + `skills/<id>/`。仓库只含代码。
+- 「从 Git 仓库导入」用的访问令牌存在 `config.json`（`gitToken`），只在你点导入时随请求发给你填的那个仓库域名。
+- 挂载的外部文件夹以系统**安全作用域书签**保存（只记住你亲自授权的那一个目录），脚本对它是只读的，不会改动里面的文件；取消挂载只删本地索引。
 - 头像照片只存在本机 `<AppGroup>/Documents/agent/avatar.png`（不会上传；选图时的暂存文件 `avatar-pending.png` 在取消或保存后会被清掉）。
 - 网络请求只发往你自己配置的接口（DeepSeek / 你填的 MCP 服务器 / 你填的向量服务）。
 - 知识库的**关键词检索完全在本机**完成；只有在你主动开启「语义检索」后，才会把**查询文本和待建索引的片段**发给你自己填的向量接口（不发送对话内容）。
@@ -79,7 +90,8 @@ scripting-ts preview_ui chat_page.tsx      # 预览 UI
 
 - **快捷指令工具拿不到返回值**（iOS 不提供该能力），参数只能以 JSON 文本单向传过去；需要真实结果请用 MCP 工具。
 - MCP 只支持**远程 HTTP 型**，本地 stdio 型（`npx …`）在 iOS 沙箱里无法运行。
-- 知识库 PDF 需为**可选中文字**的电子版，扫描件抽不出文本。
+- 知识库 PDF 需为**可选中文字**的电子版，扫描件抽不出文本；上传与外部文件夹都只能读文本类文档（txt / md / json / csv / log / 源码 / PDF），图片 OCR 与 docx / xlsx 不支持。
+- 外部文件夹的书签只能由你在选文件夹时创建，脚本不能自己新建或删除书签。
 - 语义检索**默认关闭**，需要自备 OpenAI 兼容的 `/embeddings` 接口；换向量模型必须重建向量（旧向量会作废）。
 - 文本聊天不朗读；朗读只在语音通话模式与 Siri 入口。
 - 工具栏按钮只能是文字（Scripting 会丢弃 `systemImage`）。

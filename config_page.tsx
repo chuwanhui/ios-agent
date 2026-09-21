@@ -1,17 +1,17 @@
 import {
-  Button, fetch, Form, HStack, Image, NavigationStack, Picker, Section, SecureField, Spacer, Text,
-  TextField, Toggle, VStack, useState,
+  Button, fetch, Form, HStack, Image, NavigationLink, NavigationStack, Picker, Section, SecureField,
+  Spacer, Text, TextField, Toggle, VStack, useState,
 } from "scripting"
 import {
-  AgentConfig, AgentTool, DEFAULT_SYSTEM_PROMPT, McpServer, loadConfig, makeMcpServer, saveConfig,
-  validateConfig,
+  AgentConfig, DEFAULT_SYSTEM_PROMPT, McpServer, loadConfig, makeMcpServer, saveConfig, validateConfig,
 } from "./agent_store"
-import { listMcpTools } from "./mcp_client"
 import { kbStats } from "./kb_store"
 import { DEFAULT_EMBED_PATH, embedReady, embedSettingsOf, embedTexts, QUERY_TIMEOUT_MS } from "./embed_client"
 import { skillCounts } from "./skills_store"
 import { KbPage } from "./kb_page"
 import { SkillsPage } from "./skills_page"
+import { ToolRow, ToolsPage, toAgentTools, toToolRow } from "./tools_page"
+import { McpPage } from "./mcp_page"
 import {
   AVATAR_PATH, Avatar, PENDING_AVATAR_PATH, captureAvatarPhoto, chooseAvatarFromPhotos,
   commitAvatar, discardAvatar, removeAvatarFile,
@@ -33,21 +33,6 @@ function tierOf(cfg: AgentConfig): ThinkingTier {
   if (!cfg.thinkingEnabled) return "off"
   const effort = (cfg.reasoningEffort || "").toLowerCase()
   return effort === "low" || effort === "medium" ? effort : "high"
-}
-
-type ToolRow = Omit<AgentTool, "paramsHint"> & { id: string; paramsHint: string }
-
-let toolSeq = 0
-function toRow(seed?: AgentTool): ToolRow {
-  toolSeq += 1
-  return {
-    id: "t" + toolSeq,
-    name: seed?.name ?? "",
-    description: seed?.description ?? "",
-    shortcutName: seed?.shortcutName ?? "",
-    paramsHint: seed?.paramsHint ?? "",
-    parameters: seed?.parameters,
-  }
 }
 
 interface FormState {
@@ -102,7 +87,7 @@ function toFormState(cfg: AgentConfig): FormState {
     thinking: tierOf(cfg),
     showSteps: cfg.showSteps !== false,
     speakReply: cfg.speakReply,
-    tools: (cfg.tools ?? []).map((t) => toRow(t)),
+    tools: (cfg.tools ?? []).map((t) => toToolRow(t)),
     mcpServers: (cfg.mcpServers ?? []).map((m) => ({ ...m })),
     kbEnabled: cfg.kbEnabled,
     skillsEnabled: cfg.skillsEnabled,
@@ -114,6 +99,33 @@ function toFormState(cfg: AgentConfig): FormState {
   }
 }
 
+/** 设置页里的入口行：图标 + 标题 + 副标题，点进去是子页（右侧箭头由 NavigationLink 自带）。 */
+export function NavRow(props: { icon: string; title: string; detail: string; destination: any }) {
+  return (
+    <NavigationLink destination={props.destination}>
+      <HStack spacing={12} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+        <Image
+          systemName={props.icon}
+          foregroundStyle="secondaryLabel"
+          frame={{ width: 26, alignment: "center" }}
+        />
+        <VStack
+          alignment="leading"
+          spacing={2}
+          frame={{ maxWidth: "infinity", alignment: "leading" }}
+        >
+          <Text foregroundStyle="label">{props.title}</Text>
+          {props.detail ? (
+            <Text font="footnote" foregroundStyle="secondaryLabel">
+              {props.detail}
+            </Text>
+          ) : null}
+        </VStack>
+      </HStack>
+    </NavigationLink>
+  )
+}
+
 interface Props {
   /** 关闭设置页（保存 / 取消都走这里，由聊天页控制 sheet 状态）。 */
   onClose?: () => void
@@ -122,14 +134,11 @@ interface Props {
 /** 设置页：角色 / 模型 / 对话 / 工具。以 sheet 形式从聊天页打开。 */
 export function ConfigPage({ onClose = () => {} }: Props) {
   const [state, setState] = useState<FormState>(() => toFormState(loadConfig()))
-  /** 正在测试连接的那个服务器 id（空字符串 = 没有在测试）。 */
-  const [testing, setTesting] = useState("")
   /** 「拉取可用模型」拿到的模型名；空 = 还没拉过（那就不显示下拉）。 */
   const [models, setModels] = useState<string[]>([])
   const [fetchingModels, setFetchingModels] = useState(false)
-  /** 知识库 / 技能管理页的呈现状态。 */
-  const [kbOpen, setKbOpen] = useState(false)
-  const [skillsOpen, setSkillsOpen] = useState(false)
+  /** 知识库 / 技能子页改完数据回来后，用它强制本页重算统计数字。 */
+  const [, setTick] = useState(0)
   /** 向量服务测试状态 / 结果行。 */
   const [embedBusy, setEmbedBusy] = useState(false)
   const [embedMsg, setEmbedMsg] = useState("")
@@ -140,17 +149,13 @@ export function ConfigPage({ onClose = () => {} }: Props) {
   const kbStat = kbStats()
   const skillStat = skillCounts()
 
-  function updateTool(index: number, p: Partial<AgentTool>) {
-    patch({ tools: state.tools.map((t, i) => (i === index ? { ...t, ...p } : t)) })
-  }
-
-  function addTool() {
-    patch({ tools: [...state.tools, toRow()] })
-  }
-
-  function removeTool(index: number) {
-    patch({ tools: state.tools.filter((_, i) => i !== index) })
-  }
+  // 入口行的副标题
+  const toolDetail =
+    state.tools.length > 0 ? `已配置 ${state.tools.length} 个` : "还没有，进去加一个"
+  const mcpDetail =
+    state.mcpServers.length > 0
+      ? `${state.mcpServers.length} 台服务器 · 启用 ${state.mcpServers.filter((m) => m.enabled && (m.url ?? "").trim()).length} 台`
+      : "还没有，可以粘贴 JSON 导入"
 
   // —— 头像 ——
 
@@ -182,52 +187,6 @@ export function ConfigPage({ onClose = () => {} }: Props) {
   function cancel() {
     discardAvatar()
     onClose()
-  }
-
-  function updateServer(id: string, p: Partial<McpServer>) {
-    patch({ mcpServers: state.mcpServers.map((m) => (m.id === id ? { ...m, ...p } : m)) })
-  }
-
-  function addServer() {
-    patch({ mcpServers: [...state.mcpServers, makeMcpServer()] })
-  }
-
-  function removeServer(id: string) {
-    patch({ mcpServers: state.mcpServers.filter((m) => m.id !== id) })
-  }
-
-  /** 测试连接：真发一次 initialize + tools/list，把工具名列出来。 */
-  async function testServer(m: McpServer) {
-    const url = (m.url ?? "").trim()
-    if (!url) {
-      Dialog.alert({ message: "先填服务器地址，比如 https://example.com/mcp" })
-      return
-    }
-    setTesting(m.id)
-    try {
-      const list = await listMcpTools(
-        { ...m, url, name: m.name.trim() || m.id, enabled: true },
-        true,
-      )
-      if (list.error) {
-        Dialog.alert({ title: "连接失败", message: list.error })
-        return
-      }
-      if (list.tools.length === 0) {
-        Dialog.alert({ title: "连接成功", message: "连上了，但服务器没有提供任何工具。" })
-        return
-      }
-      const names = list.tools.slice(0, 12).map((t) => "· " + t.name).join("\n")
-      const more = list.tools.length > 12 ? `\n…另外 ${list.tools.length - 12} 个` : ""
-      Dialog.alert({
-        title: "连接成功",
-        message: `拿到 ${list.tools.length} 个工具：\n${names}${more}`,
-      })
-    } catch (e: any) {
-      Dialog.alert({ title: "测试失败", message: e?.message ?? String(e) })
-    } finally {
-      setTesting("")
-    }
   }
 
   /** 上下文条数的说明弹窗（表单里放不下 tooltip，用弹窗替代）。 */
@@ -338,23 +297,13 @@ export function ConfigPage({ onClose = () => {} }: Props) {
   }
 
   function save() {
-    const tools: AgentTool[] = []
-    for (const t of state.tools) {
-      const name = (t.name ?? "").trim()
-      const shortcutName = (t.shortcutName ?? "").trim()
-      const description = (t.description ?? "").trim()
-      if (!name && !shortcutName && !description) continue // 整行空白 → 跳过
-      if (!name || !shortcutName) {
-        Dialog.alert({ message: "每个工具都要填「名称」和「快捷指令名」" })
-        return
-      }
-      tools.push({
-        name,
-        description: description || name,
-        shortcutName,
-        parameters: t.parameters,
-      })
+    // 工具：草稿行 → AgentTool（顺带补回以前会被丢掉的「参数」）
+    const built = toAgentTools(state.tools)
+    if (built.error) {
+      Dialog.alert({ message: built.error })
+      return
     }
+    const tools = built.tools
 
     const mcpServers: McpServer[] = []
     for (const m of state.mcpServers) {
@@ -424,18 +373,6 @@ export function ConfigPage({ onClose = () => {} }: Props) {
           topBarLeading: <Button title="取消" action={cancel} />,
           topBarTrailing: <Button title="保存" action={save} fontWeight="semibold" />,
         }}
-        sheet={[
-          {
-            content: <KbPage onClose={() => setKbOpen(false)} />,
-            isPresented: kbOpen,
-            onChanged: setKbOpen,
-          },
-          {
-            content: <SkillsPage onClose={() => setSkillsOpen(false)} />,
-            isPresented: skillsOpen,
-            onChanged: setSkillsOpen,
-          },
-        ]}
       >
         <Form>
           <Section
@@ -649,149 +586,41 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             </Text>
           </Section>
 
-          {state.tools.map((t, i) => (
-            <Section
-              key={t.id}
-              header={<Text>{`本地快捷指令工具 ${i + 1}${t.name.trim() ? " · " + t.name.trim() : ""}`}</Text>}
-            >
-              <TextField
-                title="名称"
-                value={t.name}
-                prompt="如 open_dnd"
-                autocorrectionDisabled
-                textInputAutocapitalization="never"
-                onChanged={(v) => updateTool(i, { name: v })}
-              />
-              <TextField
-                title="说明"
-                value={t.description}
-                prompt="给模型看的用途说明"
-                onChanged={(v) => updateTool(i, { description: v })}
-              />
-              <TextField
-                title="快捷指令名"
-                value={t.shortcutName}
-                prompt="与「快捷指令」App 里完全一致"
-                onChanged={(v) => updateTool(i, { shortcutName: v })}
-              />
-              <TextField
-                title="参数"
-                value={t.paramsHint}
-                prompt={"每行一个：字段名=说明\n例如 destination=目的地名称\nmode=出行方式 driving/walking"}
-                axis="vertical"
-                lineLimit={{ min: 1, max: 5 }}
-                autocorrectionDisabled
-                textInputAutocapitalization="never"
-                onChanged={(v) => updateTool(i, { paramsHint: v })}
-              />
-              <Button
-                title="删除这个工具"
-                role="destructive"
-                action={() => removeTool(i)}
-              />
-            </Section>
-          ))}
-
           <Section
-            header={<Text>本地快捷指令工具</Text>}
+            header={<Text>工具</Text>}
             footer={
               <VStack alignment="leading" spacing={4}>
                 <Text>
-                  一个真实快捷指令 = 一个「本地快捷指令工具」。需要参数就在「参数」里一行写一个「字段名=说明」，模型就会按这些字段名生成参数。
+                  「本地快捷指令工具」把手机里已有的快捷指令接进来：一个真快捷指令 = 一个工具。它是单向触发，模型只知道「已触发」，拿不到执行结果。
                 </Text>
                 <Text>
-                  调用时脚本把参数拼成 JSON 文本，作为快捷指令的输入传过去（无参数就不传）。所以快捷指令里要接住输入：「从输入获取词典」→「获取词典值」按字段名取值。
+                  「MCP 服务器」提供一批带真返回值的工具，模型能拿到结果再回答你；可以直接粘贴别处的 MCP 配置 JSON 导入。
                 </Text>
-                <Text>
-                  快捷指令是单向触发：模型只能知道「已触发」，拿不到执行结果，也不会编造结果。需要它知道结果的话，让快捷指令自己弹个通知告诉你。
-                </Text>
+                <Text>两个子页改完，记得回这一页点「保存」。</Text>
               </VStack>
             }
           >
-            <Button title="添加快捷指令工具" systemImage="plus.circle.fill" action={addTool} />
-            {state.tools.length === 0 ? (
-              <Text foregroundStyle="secondaryLabel">还没有本地快捷指令工具</Text>
-            ) : null}
-          </Section>
-
-          {state.mcpServers.map((m, i) => (
-            <Section
-              key={m.id}
-              header={
-                <Text>{`MCP 服务器 ${i + 1}${m.name.trim() ? " · " + m.name.trim() : ""}`}</Text>
+            <NavRow
+              icon="bolt.fill"
+              title="本地快捷指令工具"
+              detail={toolDetail}
+              destination={
+                <ToolsPage rows={state.tools} onChange={(rows) => patch({ tools: rows })} />
               }
-            >
-              <TextField
-                title="名称"
-                value={m.name}
-                prompt="如 deepwiki"
-                onChanged={(v) => updateServer(m.id, { name: v })}
-              />
-              <TextField
-                title="地址"
-                value={m.url}
-                prompt="https://example.com/mcp"
-                autocorrectionDisabled
-                textInputAutocapitalization="never"
-                onChanged={(v) => updateServer(m.id, { url: v })}
-              />
-              <SecureField
-                title="令牌"
-                value={m.token ?? ""}
-                prompt="可选，Bearer Token"
-                autocorrectionDisabled
-                textInputAutocapitalization="never"
-                onChanged={(v) => updateServer(m.id, { token: v })}
-              />
-              <TextField
-                title="额外请求头"
-                value={m.headersHint ?? ""}
-                prompt={"可选，每行一个\nHeader: Value"}
-                axis="vertical"
-                lineLimit={{ min: 1, max: 4 }}
-                autocorrectionDisabled
-                textInputAutocapitalization="never"
-                onChanged={(v) => updateServer(m.id, { headersHint: v })}
-              />
-              <Toggle
-                title="启用"
-                value={m.enabled}
-                onChanged={(v) => updateServer(m.id, { enabled: v })}
-              />
-              <Button
-                title={testing === m.id ? "正在测试…" : "测试连接"}
-                disabled={testing !== ""}
-                action={() => testServer(m)}
-              />
-              <Button
-                title="删除这个服务器"
-                role="destructive"
-                action={() => removeServer(m.id)}
-              />
-            </Section>
-          ))}
-
-          <Section
-            header={<Text>MCP 服务器</Text>}
-            footer={
-              <VStack alignment="leading" spacing={4}>
-                <Text>
-                  MCP（模型上下文协议）服务器能提供一批带真返回值的工具，比快捷指令更完整：模型能拿到结果再回答你。
-                </Text>
-                <Text>
-                  只支持远程 HTTP 类型（地址形如 https://example.com/mcp）。需要本地跑命令的 stdio 型服务器连不了：iOS 沙箱里没有常驻子进程管道。
-                </Text>
-                <Text>
-                  不想每次都去连，可以先把「启用」关掉；工具清单会缓存 5 分钟，改完配置点「测试连接」会强制重新拉一次。
-                </Text>
-              </VStack>
-            }
-          >
-            <Button title="添加服务器" systemImage="plus.circle.fill" action={addServer} />
-            {state.mcpServers.length === 0 ? (
-              <Text foregroundStyle="secondaryLabel">还没有 MCP 服务器</Text>
-            ) : null}
+            />
+            <NavRow
+              icon="server.rack"
+              title="MCP 服务器"
+              detail={mcpDetail}
+              destination={
+                <McpPage
+                  servers={state.mcpServers}
+                  onChange={(servers) => patch({ mcpServers: servers })}
+                />
+              }
+            />
           </Section>
+
 
           <Section
             header={<Text>知识库</Text>}
@@ -811,15 +640,15 @@ export function ConfigPage({ onClose = () => {} }: Props) {
               value={state.kbEnabled}
               onChanged={(v) => patch({ kbEnabled: v })}
             />
-            <Text font="footnote" foregroundStyle="secondaryLabel">
-              {kbStat.docs > 0
-                ? `已导入 ${kbStat.docs} 份资料 · ${kbStat.chunks} 个片段`
-                : "还没有资料，进去导一次就行"}
-            </Text>
-            <Button
+            <NavRow
+              icon="books.vertical"
               title="管理知识库"
-              systemImage="books.vertical"
-              action={() => setKbOpen(true)}
+              detail={
+                kbStat.docs > 0
+                  ? `已导入 ${kbStat.docs} 份资料 · ${kbStat.chunks} 个片段`
+                  : "还没有资料，可以上传文件或指定文件夹"
+              }
+              destination={<KbPage onChanged={() => setTick(Date.now())} />}
             />
           </Section>
 
@@ -900,15 +729,15 @@ export function ConfigPage({ onClose = () => {} }: Props) {
               value={state.skillsEnabled}
               onChanged={(v) => patch({ skillsEnabled: v })}
             />
-            <Text font="footnote" foregroundStyle="secondaryLabel">
-              {skillStat.total > 0
-                ? `${skillStat.total} 个技能 · 启用 ${skillStat.enabled} 个`
-                : "还没有技能，进去导一次就行"}
-            </Text>
-            <Button
+            <NavRow
+              icon="shippingbox"
               title="管理技能"
-              systemImage="shippingbox"
-              action={() => setSkillsOpen(true)}
+              detail={
+                skillStat.total > 0
+                  ? `${skillStat.total} 个技能 · 启用 ${skillStat.enabled} 个`
+                  : "还没有技能，可以上传 zip 或从 git 仓库导入"
+              }
+              destination={<SkillsPage onChanged={() => setTick(Date.now())} />}
             />
           </Section>
         </Form>

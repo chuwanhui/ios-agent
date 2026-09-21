@@ -230,7 +230,7 @@ function buildMessages(
   const sys: string[] = []
   if (cfg.systemPrompt) sys.push(cfg.systemPrompt)
   if (cfg.skillsEnabled) {
-    const sp = skillsPrompt()
+    const sp = skillsPrompt(cfg.onlySkillIds)
     if (sp) sys.push(sp)
   }
   if (sys.length > 0) {
@@ -426,7 +426,7 @@ async function buildToolSpecs(
   }
 
   // —— 内置工具：读取用户上传的 skill 详情 ——
-  if (cfg.skillsEnabled && skillsPrompt()) {
+  if (cfg.skillsEnabled && skillsPrompt(cfg.onlySkillIds)) {
     const name = take("read_skill")
     routes.set(name, { kind: "skill" })
     specs.push({
