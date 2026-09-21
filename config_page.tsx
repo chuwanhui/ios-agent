@@ -8,6 +8,7 @@ import {
 } from "./agent_store"
 import { listMcpTools } from "./mcp_client"
 import { kbStats } from "./kb_store"
+import { DEFAULT_EMBED_PATH, embedReady, embedSettingsOf, embedTexts, QUERY_TIMEOUT_MS } from "./embed_client"
 import { skillCounts } from "./skills_store"
 import { KbPage } from "./kb_page"
 import { SkillsPage } from "./skills_page"
@@ -78,6 +79,12 @@ interface FormState {
   // 知识库 / 技能
   kbEnabled: boolean
   skillsEnabled: boolean
+  // 知识库语义检索（可选）
+  embedEnabled: boolean
+  embedBaseUrl: string
+  embedPath: string
+  embedApiKey: string
+  embedModel: string
 }
 
 function toFormState(cfg: AgentConfig): FormState {
@@ -99,6 +106,11 @@ function toFormState(cfg: AgentConfig): FormState {
     mcpServers: (cfg.mcpServers ?? []).map((m) => ({ ...m })),
     kbEnabled: cfg.kbEnabled,
     skillsEnabled: cfg.skillsEnabled,
+    embedEnabled: cfg.embedEnabled === true,
+    embedBaseUrl: cfg.embedBaseUrl ?? "",
+    embedPath: cfg.embedPath ?? DEFAULT_EMBED_PATH,
+    embedApiKey: cfg.embedApiKey ?? "",
+    embedModel: cfg.embedModel ?? "",
   }
 }
 
@@ -118,6 +130,9 @@ export function ConfigPage({ onClose = () => {} }: Props) {
   /** 知识库 / 技能管理页的呈现状态。 */
   const [kbOpen, setKbOpen] = useState(false)
   const [skillsOpen, setSkillsOpen] = useState(false)
+  /** 向量服务测试状态 / 结果行。 */
+  const [embedBusy, setEmbedBusy] = useState(false)
+  const [embedMsg, setEmbedMsg] = useState("")
 
   const patch = (p: Partial<FormState>) => setState({ ...state, ...p })
 
@@ -228,6 +243,47 @@ export function ConfigPage({ onClose = () => {} }: Props) {
         "默认 50 条，一般不用改。",
       ].join("\n"),
     })
+  }
+
+  // —— 知识库语义检索（可选） ——
+
+  /** 用表单里**当前**填的值（不必先保存）拼一份设置。 */
+  function embedSettingsFromForm(enabled: boolean) {
+    return embedSettingsOf({
+      embedEnabled: enabled,
+      embedBaseUrl: state.embedBaseUrl,
+      embedPath: state.embedPath,
+      embedApiKey: state.embedApiKey,
+      embedModel: state.embedModel,
+    })
+  }
+
+  /** 真发一次 /embeddings，把返回维度和耗时告诉用户。 */
+  async function testEmbed() {
+    const s = embedSettingsFromForm(true)
+    if (!s.baseUrl || !s.model) {
+      Dialog.alert({
+        message: "先填「接口地址」和「向量模型」，比如 https://api.siliconflow.cn/v1 + BAAI/bge-m3",
+      })
+      return
+    }
+    setEmbedBusy(true)
+    setEmbedMsg("正在测试…")
+    const t0 = Date.now()
+    try {
+      const vecs = await embedTexts(["这是一次连通性测试"], s, "query", QUERY_TIMEOUT_MS)
+      const dim = vecs[0] ? vecs[0].length : 0
+      const ms = Date.now() - t0
+      setEmbedMsg(`✅ 可用：${dim} 维，${ms} ms`)
+      Dialog.alert({
+        title: "向量服务可用",
+        message: `返回 ${dim} 维向量，用时 ${ms} ms。\n\n保存后进「管理知识库」点一下「建向量」，就能用上语义检索。`,
+      })
+    } catch (e: any) {
+      setEmbedMsg("❌ " + String(e?.message ?? e))
+    } finally {
+      setEmbedBusy(false)
+    }
   }
 
   /** 拉模型列表：拿上面的地址和 Key 请求一次 <接口地址>/models。 */
@@ -343,6 +399,11 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       mcpServers,
       kbEnabled: state.kbEnabled,
       skillsEnabled: state.skillsEnabled,
+      embedEnabled: state.embedEnabled,
+      embedBaseUrl: state.embedBaseUrl.trim(),
+      embedPath: state.embedPath.trim() || DEFAULT_EMBED_PATH,
+      embedApiKey: state.embedApiKey.trim(),
+      embedModel: state.embedModel.trim(),
     }
 
     const err = validateConfig(cfg)
@@ -760,6 +821,65 @@ export function ConfigPage({ onClose = () => {} }: Props) {
               systemImage="books.vertical"
               action={() => setKbOpen(true)}
             />
+          </Section>
+
+          <Section
+            header={<Text>知识库语义检索（可选）</Text>}
+            footer={
+              <VStack alignment="leading" spacing={4}>
+                <Text>
+                  给知识库加一层「按意思找」的能力：每个片段预先算成向量存在本机，检索时与关键词结果混合排序。现有资料不用改。
+                </Text>
+                <Text>
+                  需要一个 OpenAI 兼容的向量接口（硅基流动 / 智谱 / OpenAI / 自建都行）。不填就保持纯离线关键词检索，功能不受影响。
+                </Text>
+                <Text>换了向量模型要重新建一次向量（旧向量作废）。</Text>
+              </VStack>
+            }
+          >
+            <Toggle
+              title="启用语义检索"
+              value={state.embedEnabled}
+              onChanged={(v) => patch({ embedEnabled: v })}
+            />
+            <TextField
+              title="接口地址"
+              prompt="https://api.siliconflow.cn/v1"
+              value={state.embedBaseUrl}
+              onChanged={(v) => patch({ embedBaseUrl: v })}
+            />
+            <TextField
+              title="路径"
+              prompt={DEFAULT_EMBED_PATH}
+              value={state.embedPath}
+              onChanged={(v) => patch({ embedPath: v })}
+            />
+            <SecureField
+              title="API Key"
+              prompt="sk-…"
+              value={state.embedApiKey}
+              onChanged={(v) => patch({ embedApiKey: v })}
+            />
+            <TextField
+              title="向量模型"
+              prompt="BAAI/bge-m3"
+              value={state.embedModel}
+              onChanged={(v) => patch({ embedModel: v })}
+            />
+            <Button
+              title={embedBusy ? "测试中…" : "测试向量服务"}
+              systemImage="bolt.horizontal.circle"
+              disabled={embedBusy}
+              action={testEmbed}
+            />
+            {embedMsg ? (
+              <Text
+                font="footnote"
+                foregroundStyle={embedMsg.indexOf("✅") === 0 ? "secondaryLabel" : "systemRed"}
+              >
+                {embedMsg}
+              </Text>
+            ) : null}
           </Section>
 
           <Section

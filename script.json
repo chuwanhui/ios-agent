@@ -1,9 +1,42 @@
 {
-  "name": "智能体",
-  "icon": "sparkles",
-  "color": "#5856D6",
-  "version": "1.0.0",
-  "runInApp": false,
-  "intentInputTypes": ["texts", "urls"],
-  "description": "听写 → DeepSeek 大模型 → 调用快捷指令工具 → 语音回复"
+  "entry" : "index.tsx",
+  "iconImage" : "",
+  "version" : "1.0.0",
+  "remoteResource" : null,
+  "intentInputTypes" : [
+    "texts",
+    "urls"
+  ],
+  "contributors" : [
+
+  ],
+  "name" : "智能体",
+  "description" : "听写 → DeepSeek 大模型 → 调用快捷指令工具 → 语音回复",
+  "icon" : "sparkles",
+  "localizedNames" : {
+    "zh" : "",
+    "de" : "",
+    "ru" : "",
+    "fr" : "",
+    "es" : "",
+    "ja" : "",
+    "en" : "",
+    "it" : "",
+    "pt" : ""
+  },
+  "runInApp" : false,
+  "author" : null,
+  "localizedDescriptions" : {
+    "zh" : "",
+    "de" : "",
+    "ru" : "",
+    "fr" : "",
+    "es" : "",
+    "ja" : "",
+    "en" : "",
+    "it" : "",
+    "pt" : ""
+  },
+  "color" : "#5856D6",
+  "permissions" : null
 }

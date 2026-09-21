@@ -3,7 +3,8 @@ import {
   AgentConfig, AgentTool, ChatMessage, McpServer, TokenUsage, ToolStep, toolDescription, toolParameters,
 } from "./agent_store"
 import { McpTool, callMcpTool, collectMcpTools } from "./mcp_client"
-import { formatKbHits, kbStats, searchKb } from "./kb_store"
+import { formatKbHits, kbStats, searchKbHybrid } from "./kb_store"
+import { embedQueryVector, kbSemanticReady } from "./kb_embed"
 import { listSkills, readSkill, skillsPrompt } from "./skills_store"
 
 type LLMMessage = {
@@ -397,6 +398,7 @@ async function buildToolSpecs(
   if (cfg.kbEnabled) {
     const stats = kbStats()
     if (stats.chunks > 0) {
+      const semantic = kbSemanticReady()
       const name = take("search_knowledge")
       routes.set(name, { kind: "kb" })
       specs.push({
@@ -404,7 +406,10 @@ async function buildToolSpecs(
         function: {
           name,
           description:
-            `在用户的本地知识库里做离线全文检索（共 ${stats.docs} 份资料、${stats.chunks} 个片段），` +
+            `在用户的本地知识库里检索资料（共 ${stats.docs} 份资料、${stats.chunks} 个片段），` +
+            (semantic
+              ? "关键词匹配 + 语义向量混合排序（提问换个说法也能找到），"
+              : "离线全文检索（关键词匹配），") +
             "返回最相关的几段原文。当用户的问题可能和他自己的资料有关（文档、笔记、说明书、产品信息…）时，先查一下再回答；" +
             "回答时以检索到的原文为准，并说明来自哪份文件。查不到就直说没找到，不要编造。",
           parameters: {
@@ -499,7 +504,13 @@ async function executeTool(
     const topK = rawTop > 0 ? Math.min(10, Math.floor(rawTop)) : 5
     hooks.onEvent?.({ type: "tool", kind: "kb", name, target: "本地知识库", argsText: query })
     const t0 = Date.now()
-    const text = query ? formatKbHits(query, searchKb(query, topK)) : "没有给出检索关键词。"
+    let text = "没有给出检索关键词。"
+    if (query) {
+      // 配了向量服务就先算查询向量（失败会自己退化，不报错）
+      const qv = await embedQueryVector(query)
+      const res = searchKbHybrid(query, topK, qv)
+      text = formatKbHits(query, res.hits, { mode: res.mode, fellBack: res.fellBack })
+    }
     const step = makeStep("kb", name, "本地知识库", query, text, !!query, Date.now() - t0)
     hooks.onStep?.(step)
     return { text, step }

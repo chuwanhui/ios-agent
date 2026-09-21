@@ -58,6 +58,17 @@ export interface AgentConfig {
   kbEnabled: boolean
   /** 开启用户上传的技能。 */
   skillsEnabled: boolean
+  // —— 知识库语义检索（可选，OpenAI 兼容的 /embeddings）——
+  /** 给知识库检索加上向量语义召回；关掉就是纯离线 BM25。 */
+  embedEnabled: boolean
+  /** 向量接口地址，例如 https://api.siliconflow.cn/v1 */
+  embedBaseUrl: string
+  /** 向量接口路径，默认 /embeddings */
+  embedPath: string
+  /** 向量服务密钥（和对话模型的 Key 分开填）。 */
+  embedApiKey: string
+  /** 向量模型名，例如 BAAI/bge-m3、intfloat/multilingual-e5-small。 */
+  embedModel: string
   /** 在聊天页展示 AI 的思考与工具调用过程。 */
   showSteps: boolean
   // —— 角色形象 ——
@@ -152,6 +163,11 @@ export const DEFAULT_CONFIG: AgentConfig = {
   mcpServers: [],
   kbEnabled: true,
   skillsEnabled: true,
+  embedEnabled: false,
+  embedBaseUrl: "",
+  embedPath: "/embeddings",
+  embedApiKey: "",
+  embedModel: "",
   showSteps: true,
   agentName: "小助",
   agentEmoji: "✨",
@@ -231,6 +247,7 @@ export const CONFIG_KEYS: string[] = [
   "apiKey", "baseUrl", "apiPath", "model", "systemPrompt",
   "maxHistory", "speakReply", "maxToolRounds", "thinkingEnabled",
   "reasoningEffort", "tools", "mcpServers", "kbEnabled", "skillsEnabled",
+  "embedEnabled", "embedBaseUrl", "embedPath", "embedApiKey", "embedModel",
   "showSteps", "agentName", "agentEmoji", "greetText", "avatarPath",
 ]
 

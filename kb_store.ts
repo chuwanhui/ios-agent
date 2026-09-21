@@ -7,6 +7,10 @@
  *
  * 检索：中文按 bigram（双字）+ 英文按单词建倒排，BM25 排序，
  * 再对「整句原样命中」加分。全部在主线程里做，几千个片段也就几十毫秒。
+ *
+ * 可选的语义检索：配了远程向量服务（见 `embed_client.ts`）后，可以把每个片段
+ * 预先算好的向量存在 `kb/vectors.json`，检索时 BM25 与向量余弦各自归一后加权融合
+ * （任意一边没命中都能被另一边拉上来）。没配就完全是上面那套离线关键词检索。
  */
 
 /** 用户丢资料的目录（在「文件」App 里可见）。 */
@@ -17,6 +21,8 @@ export const KB_DONE = KB_INBOX + "/已导入"
 const AGENT_DIR = FileManager.appGroupDocumentsDirectory + "/agent"
 const KB_DIR = AGENT_DIR + "/kb"
 const KB_FILE = KB_DIR + "/index.json"
+const KB_VECTORS = KB_DIR + "/vectors.json"
+export { KB_VECTORS }
 
 export interface KbChunk {
   id: string
@@ -45,6 +51,8 @@ export interface KbHit {
   title: string
   text: string
   score: number
+  /** 混合检索时这段是从哪边召回的（both = 关键词与向量都命中）。 */
+  via?: "keyword" | "vector" | "both"
 }
 
 export interface KbImportResult {
@@ -108,6 +116,160 @@ export function kbStats(): { docs: number; chunks: number; chars: number } {
   let chars = 0
   for (const d of idx.docs) chars += d.chars
   return { docs: idx.docs.length, chunks: idx.chunks.length, chars }
+}
+
+// —— 片段向量（可选：语义检索；向量由远程服务算，这里只存和算余弦） ——
+
+export interface KbVectorIndex {
+  version: number
+  /** 建这批向量用的模型名。模型换了 = 换了套向量空间，旧向量必须重建。 */
+  model: string
+  /** 向量维度（384 / 768 / 1024 …）。 */
+  dim: number
+  /** chunkId → 量化成 -127…127 的向量。 */
+  items: Record<string, number[]>
+  updatedAt: number
+}
+
+function emptyVectors(): KbVectorIndex {
+  return { version: 1, model: "", dim: 0, items: {}, updatedAt: 0 }
+}
+
+let vecCache: KbVectorIndex | null = null
+
+export function loadVectors(force = false): KbVectorIndex {
+  if (vecCache && !force) return vecCache
+  let v = emptyVectors()
+  try {
+    if (FileManager.existsSync(KB_VECTORS)) {
+      const parsed = JSON.parse(FileManager.readAsStringSync(KB_VECTORS)) as KbVectorIndex
+      if (parsed && parsed.items && typeof parsed.items === "object") {
+        v = {
+          version: 1,
+          model: parsed.model ?? "",
+          dim: parsed.dim ?? 0,
+          items: parsed.items,
+          updatedAt: parsed.updatedAt ?? 0,
+        }
+      }
+    }
+  } catch {
+    v = emptyVectors()
+  }
+  vecCache = v
+  return v
+}
+
+export function saveVectors(v: KbVectorIndex): void {
+  v.updatedAt = Date.now()
+  try {
+    FileManager.createDirectorySync(KB_DIR, true)
+    FileManager.writeAsStringSync(KB_VECTORS, JSON.stringify(v))
+  } catch {
+    // 存不下也不该让检索/对话崩掉
+  }
+  vecCache = v
+}
+
+export interface KbVectorStats {
+  /** 当前片段总数。 */
+  total: number
+  /** 已经有向量的片段数（只算还在索引里的）。 */
+  embedded: number
+  dim: number
+  /** 存盘时用的模型名。 */
+  model: string
+  /** 换了模型 → 已有向量都不算数，需要重建。 */
+  stale: boolean
+}
+
+export function vectorStats(model = ""): KbVectorStats {
+  const idx = loadKbIndex()
+  const v = loadVectors()
+  let embedded = 0
+  for (let i = 0; i < idx.chunks.length; i++) {
+    if (v.items[idx.chunks[i].id]) embedded += 1
+  }
+  const stale = !!v.model && !!model && v.model !== model
+  return { total: idx.chunks.length, embedded, dim: v.dim, model: v.model, stale }
+}
+
+/** 还没建向量（或换了模型需重算）的片段，按索引顺序。 */
+export function chunksMissingVectors(model: string): KbChunk[] {
+  const idx = loadKbIndex()
+  const v = loadVectors()
+  if (v.model && model && v.model !== model) return idx.chunks.slice()
+  const out: KbChunk[] = []
+  for (let i = 0; i < idx.chunks.length; i++) {
+    if (!v.items[idx.chunks[i].id]) out.push(idx.chunks[i])
+  }
+  return out
+}
+
+/** 把浮点向量压成 int8：余弦只看方向，尺度会在分母里约掉，所以不用存比例。 */
+export function quantize(vec: number[]): number[] {
+  let max = 0
+  for (let i = 0; i < vec.length; i++) {
+    const a = Math.abs(vec[i])
+    if (a > max) max = a
+  }
+  const out: number[] = []
+  if (!max) {
+    for (let i = 0; i < vec.length; i++) out.push(0)
+    return out
+  }
+  const k = 127 / max
+  for (let i = 0; i < vec.length; i++) out.push(Math.round(vec[i] * k))
+  return out
+}
+
+/** 余弦相似度（-1…1；长度不等时按短的算，正常不会发生）。 */
+export function cosine(a: number[], b: number[]): number {
+  const n = Math.min(a.length, b.length)
+  let dot = 0
+  let na = 0
+  let nb = 0
+  for (let i = 0; i < n; i++) {
+    dot += a[i] * b[i]
+    na += a[i] * a[i]
+    nb += b[i] * b[i]
+  }
+  if (!na || !nb) return 0
+  return dot / Math.sqrt(na * nb)
+}
+
+/** 存一批片段向量（模型或维度变了会先清空旧的）。 */
+export function storeChunkVectors(model: string, entries: { id: string; vec: number[] }[]): void {
+  if (entries.length === 0) return
+  const v = loadVectors()
+  const dim = entries[0].vec.length
+  if (v.model && model && v.model !== model) v.items = {}
+  if (v.dim && dim && v.dim !== dim) v.items = {}
+  if (model) v.model = model
+  if (dim) v.dim = dim
+  for (let i = 0; i < entries.length; i++) v.items[entries[i].id] = quantize(entries[i].vec)
+  saveVectors(v)
+}
+
+/** 丢掉已经不在索引里的片段向量（删资料后用）。 */
+export function pruneVectors(): void {
+  const idx = loadKbIndex()
+  const alive = new Set<string>()
+  for (let i = 0; i < idx.chunks.length; i++) alive.add(idx.chunks[i].id)
+  const v = loadVectors()
+  const keys = Object.keys(v.items)
+  let changed = false
+  for (let i = 0; i < keys.length; i++) {
+    if (!alive.has(keys[i])) {
+      delete v.items[keys[i]]
+      changed = true
+    }
+  }
+  if (changed) saveVectors(v)
+}
+
+export function clearVectors(): void {
+  saveVectors(emptyVectors())
 }
 
 // —— 分词 / 切片 ——
@@ -332,10 +494,12 @@ export function deleteKbDoc(docId: string): void {
   idx.docs = idx.docs.filter((d) => d.id !== docId)
   idx.chunks = idx.chunks.filter((c) => c.docId !== docId)
   saveKbIndex(idx)
+  pruneVectors()
 }
 
 export function clearKb(): void {
   saveKbIndex(emptyIndex())
+  clearVectors()
 }
 
 // —— 检索（BM25） ——
@@ -350,16 +514,19 @@ function chunkTerms(c: KbChunk): Map<string, number> {
   return m
 }
 
-/** 返回最相关的若干片段（按相关度降序）。没有任何命中时返回空数组。 */
-export function searchKb(query: string, topK = 5): KbHit[] {
-  const idx = loadKbIndex()
+/**
+ * BM25 原始分（与 idx.chunks 一一对应；含「整句原样命中」加分）。
+ * 返回数组长度 = 片段数，没命中的片段是 0。
+ */
+function bm25Scores(idx: KbIndex, query: string): number[] {
   const q = (query ?? "").trim()
-  if (!q || idx.chunks.length === 0) return []
+  const N = idx.chunks.length
+  const scores: number[] = []
+  for (let i = 0; i < N; i++) scores.push(0)
+  if (!q || N === 0) return scores
 
   const qTerms = Array.from(new Set(tokenize(q)))
-  if (qTerms.length === 0) return []
-
-  const N = idx.chunks.length
+  if (qTerms.length === 0) return scores
   const terms: Array<Map<string, number>> = []
   const lens: number[] = []
   const df = new Map<string, number>()
@@ -381,7 +548,6 @@ export function searchKb(query: string, topK = 5): KbHit[] {
   const avg = total / N || 1
   const low = q.toLowerCase()
 
-  const hits: KbHit[] = []
   for (let i = 0; i < N; i++) {
     const m = terms[i]
     const len = lens[i] || 1
@@ -395,22 +561,137 @@ export function searchKb(query: string, topK = 5): KbHit[] {
     }
     // 整句原样出现 = 强信号
     if (score > 0 && idx.chunks[i].text.toLowerCase().indexOf(low) >= 0) score += 3
-    if (score > 0) {
-      hits.push({ title: idx.chunks[i].title, text: idx.chunks[i].text, score })
+    scores[i] = score
+  }
+  return scores
+}
+
+// —— 混合检索（关键词 ∪ 语义） ——
+
+export type KbSearchMode = "bm25" | "hybrid"
+
+export interface KbSearchResult {
+  hits: KbHit[]
+  mode: KbSearchMode
+  /** 本该走语义、但一条向量都没有（还没建索引 / 换了模型）——已退回关键词。 */
+  fellBack: boolean
+}
+
+/** 融合权重：关键词略重（专有名词、编号、日期这类靠字面命中更稳）。 */
+const W_KEYWORD = 0.55
+const W_VECTOR = 0.45
+
+/**
+ * 线性归一到 0..1。
+ * `useMin=false` 用于 BM25（下限天然是 0）；`useMin=true` 用于余弦（分布可能整体偏高/偏低）。
+ */
+function normalizeTo01(values: number[], useMin: boolean): number[] {
+  let min = 0
+  let max = 0
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    if (i === 0 || v > max) max = v
+    if (i === 0 || v < min) min = v
+  }
+  const lo = useMin ? min : 0
+  const span = max - lo
+  const out: number[] = []
+  for (let i = 0; i < values.length; i++) out.push(span > 1e-9 ? (values[i] - lo) / span : 0)
+  return out
+}
+
+function rankBy(
+  scores: number[],
+  idx: KbIndex,
+  signals: { keyword: number[]; hasVec: boolean[] } | null,
+): KbHit[] {
+  const rows: KbHit[] = []
+  for (let i = 0; i < scores.length; i++) {
+    if (!(scores[i] > 0)) continue
+    const hit: KbHit = { title: idx.chunks[i].title, text: idx.chunks[i].text, score: scores[i] }
+    if (signals) {
+      const kw = signals.keyword[i] > 0
+      const vec = signals.hasVec[i]
+      hit.via = kw && vec ? "both" : vec ? "vector" : "keyword"
     }
+    rows.push(hit)
+  }
+  rows.sort((a, b) => b.score - a.score)
+  return rows
+}
+
+/** 纯关键词检索（没配向量服务 / 还没建向量时用）。 */
+export function searchKb(query: string, topK = 5): KbHit[] {
+  return searchKbHybrid(query, topK).hits
+}
+
+/**
+ * 混合检索：关键词 BM25 ∪ 语义向量，两边各自归一到 0..1 后加权求和。
+ * 这样「只有字面命中」和「只有语义命中」的片段都能被召回来。
+ * `queryVec` 是查询文本的向量（由 `kb_embed.ts` 算好传进来）；不给就是纯 BM25。
+ */
+export function searchKbHybrid(query: string, topK = 5, queryVec?: number[]): KbSearchResult {
+  const idx = loadKbIndex()
+  const N = idx.chunks.length
+  const limit = Math.max(1, topK)
+  if (!(query ?? "").trim() || N === 0) return { hits: [], mode: "bm25", fellBack: false }
+
+  const keyword = bm25Scores(idx, query)
+  const useVec = !!queryVec && queryVec.length > 0
+  const vecs = useVec ? loadVectors() : null
+  if (!vecs) {
+    return { hits: rankBy(keyword, idx, null).slice(0, limit), mode: "bm25", fellBack: false }
   }
 
-  hits.sort((a, b) => b.score - a.score)
-  return hits.slice(0, Math.max(1, topK))
+  const dense: number[] = []
+  const hasVec: boolean[] = []
+  let withVec = 0
+  for (let i = 0; i < N; i++) {
+    const v = vecs.items[idx.chunks[i].id]
+    if (v) {
+      dense.push(cosine(queryVec as number[], v))
+      hasVec.push(true)
+      withVec += 1
+    } else {
+      dense.push(0)
+      hasVec.push(false)
+    }
+  }
+  if (withVec === 0) {
+    return { hits: rankBy(keyword, idx, null).slice(0, limit), mode: "bm25", fellBack: true }
+  }
+
+  const kwN = normalizeTo01(keyword, false)
+  const denseN = normalizeTo01(dense, true)
+  const fused: number[] = []
+  for (let i = 0; i < N; i++) fused.push(W_KEYWORD * kwN[i] + W_VECTOR * denseN[i])
+  const hits = rankBy(fused, idx, { keyword, hasVec }).slice(0, limit)
+  return { hits, mode: "hybrid", fellBack: false }
 }
 
 /** 把检索结果拼成给模型看的文本。 */
-export function formatKbHits(query: string, hits: KbHit[]): string {
+export function formatKbHits(
+  query: string,
+  hits: KbHit[],
+  opts?: { mode?: KbSearchMode; fellBack?: boolean },
+): string {
+  const modeLine =
+    opts?.mode === "hybrid"
+      ? "\n\n（检索方式：关键词 BM25 + 语义向量混合排序。）"
+      : opts?.fellBack
+        ? "\n\n（语义向量这次没取到，本次已退回纯关键词检索。）"
+        : ""
   if (hits.length === 0) {
-    return `知识库里没有找到和「${query}」相关的内容。可以告诉用户知识库里没有这份资料，不要凭空回答。`
+    return (
+      `知识库里没有找到和「${query}」相关的内容。可以告诉用户知识库里没有这份资料，不要凭空回答。` +
+      modeLine
+    )
   }
-  const parts = hits.map(
-    (h, i) => `【${i + 1}】来源：${h.title}\n${h.text}`,
-  )
-  return `知识库检索「${query}」命中 ${hits.length} 段：\n\n${parts.join("\n\n")}\n\n（以上是知识库原文，回答时以它为准并说明来源文件。）`
+  const parts = hits.map((h, i) => {
+    const tag = h.via === "vector" ? "语义命中" : h.via === "both" ? "关键词 + 语义命中" : ""
+    return `【${i + 1}】来源：${h.title}${tag ? "（" + tag + "）" : ""}\n${h.text}`
+  })
+  return `知识库检索「${query}」命中 ${hits.length} 段：\n\n${parts.join(
+    "\n\n",
+  )}\n\n（以上是知识库原文，回答时以它为准并说明来源文件。）${modeLine}`
 }
