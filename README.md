@@ -12,6 +12,7 @@
 | 模块 | 说明 |
 | --- | --- |
 | **聊天页** | 参考 DeepSeek / ChatGPT 的布局：角色形象、多会话、左侧隐藏抽屉放历史 |
+| **流式输出** | 回复逐字打出（打字机），思考过程边想边滚，每轮显示 token 用量（`↑ 输入 · ↓ 输出`）|
 | **自定义头像** | 设置页从相册选照片或拍一张，自动方形裁剪 + 缩到 512pt；没照片时用 emoji，文件丢了自动回退 |
 | **语音通话模式** | 聆听 → 思考 → 朗读 → 再聆听，自动循环，点头像可打断朗读 |
 | **快捷指令工具** | 一个真实快捷指令 = 一个工具（`shortcuts://` 单向触发）|
@@ -48,7 +49,7 @@
 ├── skills_page.tsx      技能管理页
 ├── intent.tsx           快捷指令 / Siri 入口
 ├── live_activity.tsx    灵动岛 Live Activity
-├── agent_core.ts        DeepSeek 请求 + 工具循环
+├── agent_core.ts        DeepSeek 请求（流式 SSE + 工具循环）
 ├── mcp_client.ts        MCP 客户端（JSON-RPC over Streamable HTTP）
 ├── kb_store.ts          知识库（bigram + BM25，纯 JS）
 ├── skills_store.ts      技能导入 / 注册表 / 渐进式披露
@@ -57,7 +58,7 @@
 
 ## 数据与隐私
 
-- **API Key 不在本仓库里**：配置存在 `<AppGroup>/Documents/agent/config.json`，会话在 `sessions.json`，知识库索引在 `kb/index.json`，技能在 `skills.json` + `skills/<id>/`。仓库只含代码。
+- **API Key 不在本仓库里**：配置存在 `<AppGroup>/Documents/agent/config.json`，会话在 `sessions.json`（其中存有每轮的 token 用量），知识库索引在 `kb/index.json`，技能在 `skills.json` + `skills/<id>/`。仓库只含代码。
 - 头像照片只存在本机 `<AppGroup>/Documents/agent/avatar.png`（不会上传；选图时的暂存文件 `avatar-pending.png` 在取消或保存后会被清掉）。
 - 网络请求只发往你自己配置的接口（DeepSeek / 你填的 MCP 服务器）。
 - 知识库检索**完全在本机**完成，不调用任何模型或第三方服务。
