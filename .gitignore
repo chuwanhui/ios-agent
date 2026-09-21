@@ -1,0 +1,10 @@
+.DS_Store
+Thumbs.db
+*.log
+*.bak
+*~
+_tmp*
+_t*.ts
+_*.tsx
+node_modules/
+dist/

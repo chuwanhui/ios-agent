@@ -1,0 +1,9 @@
+{
+  "name": "智能体",
+  "icon": "sparkles",
+  "color": "#5856D6",
+  "version": "1.0.0",
+  "runInApp": false,
+  "intentInputTypes": ["texts", "urls"],
+  "description": "听写 → DeepSeek 大模型 → 调用快捷指令工具 → 语音回复"
+}
