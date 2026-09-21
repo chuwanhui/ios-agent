@@ -1,5 +1,5 @@
 import {
-  Button, HStack, Image, Navigation, NavigationStack, ProgressView, ScrollView,
+  Button, HStack, Image, Navigation, NavigationStack, ProgressView, ScrollView, Spacer,
   Text, TextField, Toolbar, ToolbarItem, VStack, ZStack, useState,
 } from "scripting"
 import {
@@ -37,17 +37,18 @@ function Bubble({ message, emoji }: { message: ChatMessage; emoji: string }) {
       spacing={8}
       alignment="bottom"
       padding={{ horizontal: 12, vertical: 4 }}
-      frame={{ maxWidth: "infinity", alignment: isUser ? "trailing" : "leading" }}
+      frame={{ maxWidth: "infinity" }}
     >
-      {isUser ? null : <Avatar emoji={emoji} />}
+      {isUser ? <Spacer /> : <Avatar emoji={emoji} />}
       <VStack
         padding={{ horizontal: 14, vertical: 10 }}
         background={isUser ? "systemBlue" : "secondarySystemFill"}
         clipShape={{ type: "rect", cornerRadius: 18 }}
-        frame={{ maxWidth: 280, alignment: "leading" }}
+        frame={{ maxWidth: 280, alignment: isUser ? "trailing" : "leading" }}
       >
         <Text foregroundStyle={isUser ? "white" : "label"}>{message.content}</Text>
       </VStack>
+      {isUser ? null : <Spacer />}
     </HStack>
   )
 }
@@ -58,7 +59,7 @@ function ThinkingBubble({ emoji }: { emoji: string }) {
       spacing={8}
       alignment="bottom"
       padding={{ horizontal: 12, vertical: 4 }}
-      frame={{ maxWidth: "infinity", alignment: "leading" }}
+      frame={{ maxWidth: "infinity" }}
     >
       <Avatar emoji={emoji} />
       <HStack
@@ -70,6 +71,7 @@ function ThinkingBubble({ emoji }: { emoji: string }) {
         <ProgressView controlSize="small" />
         <Text font="footnote" foregroundStyle="secondaryLabel">思考中…</Text>
       </HStack>
+      <Spacer />
     </HStack>
   )
 }
