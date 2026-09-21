@@ -1,6 +1,6 @@
 import {
-  Button, HStack, Image, Navigation, NavigationStack, ProgressView, ScrollView, Spacer,
-  Text, TextField, Toolbar, ToolbarItem, VStack, ZStack, useState,
+  Button, HStack, Image, Navigation, NavigationStack, ProgressView, ScrollView, Script, Spacer,
+  Text, TextField, Toolbar, ToolbarItem, VStack, ZStack, useEffect, useState,
 } from "scripting"
 import {
   AgentConfig, ChatMessage, SessionMounts, SessionStore, TokenUsage, ToolStep, capMessages,
@@ -14,6 +14,7 @@ import { MountPage, mountChips } from "./mount_page"
 import { VoicePage } from "./voice_page"
 import { DRAWER_WIDTH, Sidebar } from "./sidebar"
 import { Avatar, AvatarSpec } from "./avatar"
+import { handleCallback } from "./tool_callback"
 
 function excerpt(text: string): string {
   const t = (text ?? "").trim()
@@ -49,6 +50,12 @@ export function StepRow({ step, defaultOpen = false }: { step: ToolStep; default
         </Text>
         {step.target && step.target !== toolKindLabel(step.kind) ? (
           <Text font="caption" foregroundStyle="label" lineLimit={1}>{step.target}</Text>
+        ) : null}
+        {step.cid && step.callback ? (
+          <Text font="caption2" fontWeight="semibold" foregroundStyle="systemGreen">已回传</Text>
+        ) : null}
+        {step.cid && !step.callback ? (
+          <Text font="caption2" foregroundStyle="tertiaryLabel">等回传</Text>
         ) : null}
         <Spacer />
         <Image
@@ -284,6 +291,43 @@ export function ChatPage() {
   const [liveReasoning, setLiveReasoning] = useState("")
   const [liveSteps, setLiveSteps] = useState<ToolStep[]>([])
   const [liveText, setLiveText] = useState("")
+  /** 快捷指令回传后要自动接着跑的那一轮（先把结果落盘、切到那个会话，等不忙了再发）。 */
+  const [autoJob, setAutoJob] = useState<{ text: string } | null>(null)
+
+  /**
+   * 快捷指令回传有两条入口，都要接：
+   *  ① 冷启动 —— App 被杀掉后由回调 URL 拉起，入口会重跑，result 在 queryParameters 里；
+   *  ② 被唤起 —— 实例还活着时 `scripting://run` 只触发 onResume，入口不会重跑。
+   * 这里只负责「解析 + 落盘 + 排队」；真正发出去交给下面那个 effect，
+   * 因为它的闭包里装着刚刷新过的 store / cfg（onResume 的闭包是旧的）。
+   */
+  useEffect(() => {
+    const consume = (params: any) => {
+      let out: ReturnType<typeof handleCallback> = null
+      try {
+        out = handleCallback(params)
+      } catch {
+        out = null
+      }
+      if (!out) return
+      setCfg(loadConfig())
+      setStore(loadStore())
+      setAutoJob({ text: out.text })
+    }
+    consume(Script.queryParameters)
+    const off = Script.onResume((d) => consume(d?.queryParameters ?? null))
+    return () => {
+      if (typeof off === "function") off()
+    }
+  }, [])
+
+  // 回传续跑：必须等这一轮不忙（send 自己在忙时是直接返回的，会白白吞掉）。
+  useEffect(() => {
+    if (!autoJob || busy) return
+    const job = autoJob
+    setAutoJob(null)
+    void send(job.text)
+  }, [autoJob, busy])
 
   const current = store.sessions.find((s) => s.id === store.currentId) ?? null
   const messages = current?.messages ?? []

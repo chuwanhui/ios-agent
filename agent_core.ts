@@ -6,6 +6,7 @@ import { McpTool, callMcpTool, collectMcpTools } from "./mcp_client"
 import { formatKbHits, kbStats, searchKbHybrid } from "./kb_store"
 import { embedQueryVector, kbSemanticReady } from "./kb_embed"
 import { listSkills, readSkill, skillsPrompt } from "./skills_store"
+import { addPending } from "./tool_callback"
 
 type LLMMessage = {
   role: string
@@ -540,7 +541,7 @@ async function executeTool(
     return { text, step }
   }
 
-  // —— 快捷指令工具：单向触发，拿不到结果 ——
+  // —— 快捷指令工具：默认单向触发；配了 returns 的会把结果回传回来 ——
   const tool = route.tool
   const inputText = keys.length > 0 ? JSON.stringify(args) : ""
   hooks.onEvent?.({ type: "tool", kind: "shortcut", name, target: tool.shortcutName, argsText: inputText })
@@ -548,8 +549,18 @@ async function executeTool(
   const t0 = Date.now()
   const ok = await Safari.openURL(buildShortcutURL(tool, inputText))
   let text: string
+  /** 等回传的调用编号（回填结果时靠它对上号）。 */
+  let cid: string | undefined
   if (!ok) {
     text = `执行快捷指令「${tool.shortcutName}」失败（无法打开，可能快捷指令名不存在）`
+  } else if (tool.returns) {
+    // 配了回调 URL：先落一条 pending，快捷指令末尾「打开 URL」把结果送回来时再回填。
+    // 这一轮不等它（回传会作为一条新消息续上），所以这里必须交代清楚「结果待回」。
+    cid = addPending({ toolName: name, shortcutName: tool.shortcutName, args: inputText }).cid
+    const tail = "。它执行完会把结果回传（作为一条新消息出现），届时再回答；现在先说明已经触发，不要编造结果。"
+    text = keys.length > 0
+      ? `已触发快捷指令「${tool.shortcutName}」，传入参数：${inputText}，正在等它回传结果` + tail
+      : `已触发快捷指令「${tool.shortcutName}」（无参数），正在等它回传结果` + tail
   } else {
     // 快捷指令是单向触发：这里必须明确告诉模型「拿不到结果」，
     // 否则它会顺着上下文编造一个执行结果。
@@ -559,6 +570,7 @@ async function executeTool(
       : `已触发快捷指令「${tool.shortcutName}」（无参数）` + tail
   }
   const step = makeStep("shortcut", name, tool.shortcutName, inputText, text, ok, Date.now() - t0)
+  if (cid) step.cid = cid
   hooks.onStep?.(step)
   return { text, step }
 }
