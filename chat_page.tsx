@@ -3,7 +3,7 @@ import {
   Text, TextField, Toolbar, ToolbarItem, VStack, ZStack, useState,
 } from "scripting"
 import {
-  AgentConfig, ChatMessage, SessionStore, ToolStep, capMessages, deriveTitle, loadConfig,
+  AgentConfig, ChatMessage, SessionStore, TokenUsage, ToolStep, capMessages, deriveTitle, loadConfig,
   loadStore, makeSession, removeSession, saveStore, upsertSession, withCurrentSession,
 } from "./agent_store"
 import { dictate, runAgent, toolKindLabel } from "./agent_core"
@@ -21,6 +21,12 @@ function excerpt(text: string): string {
 /** 过程面板里嵌套小卡片的底色（iOS 单色风格，不用蓝色强调）。 */
 const STEP_FILL = "rgba(120,120,128,0.12)"
 const CARD_FILL = "rgba(120,120,128,0.08)"
+
+/** token 数太长不好看，过千折成 1.2k。 */
+function fmtTokens(n: number): string {
+  if (n < 1000) return String(n)
+  return (n / 1000).toFixed(n < 10000 ? 1 : 0) + "k"
+}
 
 /** 一次工具调用：一行摘要，点开看参数与返回结果。 */
 export function StepRow({ step, defaultOpen = false }: { step: ToolStep; defaultOpen?: boolean }) {
@@ -71,13 +77,15 @@ export function StepRow({ step, defaultOpen = false }: { step: ToolStep; default
  * 整卡可收起；实时那一轮默认展开，历史消息默认收起。
  */
 export function ProcessCard({
-  steps, reasoning, live, defaultOpen, stepDefaultOpen = false,
+  steps, reasoning, live, defaultOpen, stepDefaultOpen = false, usage,
 }: {
   steps: ToolStep[]
   reasoning: string
   live: boolean
   defaultOpen: boolean
   stepDefaultOpen?: boolean
+  /** 这一轮的 token 用量（流式最后一帧带回来的），没有就不显示。 */
+  usage?: TokenUsage
 }) {
   const [open, setOpen] = useState(defaultOpen)
   const count = steps.length
@@ -121,6 +129,14 @@ export function ProcessCard({
           ) : null}
           {steps.map((s, i) => <StepRow key={"s" + i} step={s} defaultOpen={stepDefaultOpen} />)}
         </VStack>
+      ) : null}
+      {usage ? (
+        <HStack spacing={0}>
+          <Spacer />
+          <Text font="caption2" foregroundStyle="tertiaryLabel">
+            {`↑ ${fmtTokens(usage.inputTokens)} · ↓ ${fmtTokens(usage.outputTokens)} tokens`}
+          </Text>
+        </HStack>
       ) : null}
     </VStack>
   )
@@ -178,6 +194,7 @@ export function AssistantMessage({
             live={false}
             defaultOpen={defaultOpen}
             stepDefaultOpen={stepDefaultOpen}
+            usage={message.usage}
           />
         ) : null}
         <HStack spacing={0}>
@@ -196,10 +213,10 @@ export function AssistantMessage({
   )
 }
 
-/** 正在跑的这一轮：过程实时长出来。 */
+/** 正在跑的这一轮：过程实时长出来，正文边生成边显示（打字机）。 */
 export function LiveThinking({
-  avatar, reasoning, steps, showSteps,
-}: { avatar: AvatarSpec; reasoning: string; steps: ToolStep[]; showSteps: boolean }) {
+  avatar, reasoning, steps, showSteps, text,
+}: { avatar: AvatarSpec; reasoning: string; steps: ToolStep[]; showSteps: boolean; text: string }) {
   const hasProcess = steps.length > 0 || reasoning.length > 0
   return (
     <HStack
@@ -214,15 +231,20 @@ export function LiveThinking({
           <ProcessCard steps={steps} reasoning={reasoning} live={true} defaultOpen={true} />
         ) : null}
         <HStack spacing={0}>
-          <HStack
-            spacing={8}
+          <VStack
             padding={{ horizontal: 14, vertical: 10 }}
             background="secondarySystemFill"
             clipShape={{ type: "rect", cornerRadius: 18 }}
           >
-            <ProgressView controlSize="small" />
-            <Text font="footnote" foregroundStyle="secondaryLabel">思考中…</Text>
-          </HStack>
+            {text ? (
+              <Text foregroundStyle="label">{text + "\u258c"}</Text>
+            ) : (
+              <HStack spacing={8}>
+                <ProgressView controlSize="small" />
+                <Text font="footnote" foregroundStyle="secondaryLabel">思考中…</Text>
+              </HStack>
+            )}
+          </VStack>
           <Spacer />
         </HStack>
       </VStack>
@@ -258,6 +280,7 @@ export function ChatPage() {
   // 正在跑的这一轮的过程（实时画在聊天流里，结束后随消息落库）。
   const [liveReasoning, setLiveReasoning] = useState("")
   const [liveSteps, setLiveSteps] = useState<ToolStep[]>([])
+  const [liveText, setLiveText] = useState("")
 
   const current = store.sessions.find((s) => s.id === store.currentId) ?? null
   const messages = current?.messages ?? []
@@ -327,16 +350,58 @@ export function ChatPage() {
     setInput("")
     setLiveReasoning("")
     setLiveSteps([])
+    setLiveText("")
     await startThinking("正在思考…")
+
+    // 流式增量一秒能来几十次，合并到 ~60ms 刷一次，免得把界面刷爆。
+    let pendingText = ""
+    let pendingReasoning = ""
+    let pendingSegment = false
+    let lastFlush = 0
+    const flush = () => {
+      lastFlush = Date.now()
+      if (pendingText) {
+        const t = pendingText
+        pendingText = ""
+        setLiveText((prev) => prev + t)
+      }
+      if (pendingReasoning) {
+        const r = pendingReasoning
+        const sep = pendingSegment ? "\n\n" : ""
+        pendingReasoning = ""
+        pendingSegment = false
+        setLiveReasoning((prev) => (prev ? prev + sep + r : r))
+      }
+    }
 
     try {
       const { reply, newHistory } = await runAgent(trimmed, cfg, base.messages, {
         onEvent: (e) => {
+          // 调工具前可能擦过一句开场白，它不在最终回答里，清掉免得一闪就没
+          pendingText = ""
+          setLiveText("")
           void updateThinking(`正在调用「${e.target}」…`)
         },
-        onReasoning: (t) => setLiveReasoning((prev) => (prev ? prev + "\n\n" + t : t)),
         onStep: (s) => setLiveSteps((prev) => [...prev, s]),
+        onDelta: (d) => {
+          if (d.reset) {
+            pendingText = ""
+            pendingReasoning = ""
+            pendingSegment = false
+            setLiveText("")
+            setLiveReasoning("")
+            return
+          }
+          if (d.type === "text") {
+            pendingText += d.content
+          } else {
+            if (d.newSegment) pendingSegment = true
+            pendingReasoning += d.content
+          }
+          if (Date.now() - lastFlush >= 60) flush()
+        },
       })
+      flush()
       const capped = capMessages(newHistory, cfg.maxHistory)
       apply(
         upsertSession(store, {
@@ -368,6 +433,7 @@ export function ChatPage() {
       setBusy(false)
       setLiveReasoning("")
       setLiveSteps([])
+      setLiveText("")
     }
   }
 
@@ -459,6 +525,7 @@ export function ChatPage() {
                 avatar={avatar}
                 reasoning={liveReasoning}
                 steps={liveSteps}
+                text={liveText}
                 showSteps={cfg.showSteps !== false}
               />
             ) : null}

@@ -1,6 +1,6 @@
 import { fetch } from "scripting"
 import {
-  AgentConfig, AgentTool, ChatMessage, McpServer, ToolStep, toolDescription, toolParameters,
+  AgentConfig, AgentTool, ChatMessage, McpServer, TokenUsage, ToolStep, toolDescription, toolParameters,
 } from "./agent_store"
 import { McpTool, callMcpTool, collectMcpTools } from "./mcp_client"
 import { formatKbHits, kbStats, searchKb } from "./kb_store"
@@ -28,21 +28,35 @@ async function callDeepSeek(
   cfg: AgentConfig,
   toolsSpec: any[] | null,
 ): Promise<any> {
+  const resp = await postChat(cfg, buildBody(messages, cfg, toolsSpec, false))
+  return await resp.json()
+}
+
+/** 请求体（流式 / 非流式共用）。 */
+function buildBody(
+  messages: LLMMessage[],
+  cfg: AgentConfig,
+  toolsSpec: any[] | null,
+  stream: boolean,
+): Record<string, any> {
   const body: Record<string, any> = {
     model: cfg.model,
     messages,
-    stream: false,
+    stream,
   }
-  if (cfg.thinkingEnabled) {
-    body.thinking = { type: "enabled" }
-  }
-  if (cfg.reasoningEffort) {
-    body.reasoning_effort = cfg.reasoningEffort
-  }
-  if (toolsSpec && toolsSpec.length > 0) {
-    body.tools = toolsSpec
-  }
+  // 让服务端在最后一帧带上 usage（OpenAI 兼容协议）；不认这个字段的服务端会被上层退回非流式。
+  if (stream) body.stream_options = { include_usage: true }
+  if (cfg.thinkingEnabled) body.thinking = { type: "enabled" }
+  if (cfg.reasoningEffort) body.reasoning_effort = cfg.reasoningEffort
+  if (toolsSpec && toolsSpec.length > 0) body.tools = toolsSpec
+  return body
+}
 
+/**
+ * 发一次 POST。HTTP 层出错时给 error 挂上 `httpStatus`：
+ * 上层据此区分「接口本身报错」（直接抛给用户）和「这个服务端不支持流式」（退回一次性请求）。
+ */
+async function postChat(cfg: AgentConfig, body: Record<string, any>): Promise<any> {
   const resp = await fetch(endpoint(cfg), {
     method: "POST",
     headers: {
@@ -51,12 +65,159 @@ async function callDeepSeek(
     },
     body: JSON.stringify(body),
   })
-
   if (!resp.ok) {
     const text = await resp.text()
-    throw new Error(`DeepSeek 错误 ${resp.status}: ${text}`)
+    const err: any = new Error(`接口错误 ${resp.status}：${text.slice(0, 300)}`)
+    err.httpStatus = resp.status
+    throw err
   }
-  return await resp.json()
+  return resp
+}
+
+/** 流式增量：正文与推理分开推给 UI（打字机效果）。 */
+export type AgentDelta = {
+  type: "text" | "reasoning"
+  content: string
+  /** 推理的新段落：多轮工具调用时每轮一段，UI 用它决定要不要插空行。 */
+  newSegment?: boolean
+  /** 丢弃已经画出来的内容（流式中途失败、退回一次性请求时用）。 */
+  reset?: boolean
+}
+
+type StreamOutcome = {
+  message: any
+  /** 本轮拼起来的推理全文。 */
+  reasoning: string
+  usage?: TokenUsage
+}
+
+/** 把各家不同的 usage 字段归一化。 */
+function readUsage(raw: any): TokenUsage | undefined {
+  if (!raw || typeof raw !== "object") return undefined
+  const input = Number(raw.prompt_tokens ?? raw.input_tokens ?? 0)
+  const output = Number(raw.completion_tokens ?? raw.output_tokens ?? 0)
+  if (!input && !output) return undefined
+  const usage: TokenUsage = {
+    inputTokens: input,
+    outputTokens: output,
+    totalTokens: Number(raw.total_tokens ?? input + output),
+  }
+  const think = Number(raw.completion_tokens_details?.reasoning_tokens ?? raw.reasoning_tokens ?? 0)
+  if (think > 0) usage.reasoningTokens = think
+  const cached = Number(raw.prompt_tokens_details?.cached_tokens ?? raw.prompt_cache_hit_tokens ?? 0)
+  if (cached > 0) usage.cachedInputTokens = cached
+  return usage
+}
+
+/** 逐行取 SSE 的 `data:` 负载（忽略别的行和 [DONE]）。 */
+function eachSsePayload(frame: string, fn: (payload: string) => void) {
+  for (const line of frame.split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith("data:")) continue
+    const payload = trimmed.slice(5).trim()
+    if (payload && payload !== "[DONE]") fn(payload)
+  }
+}
+
+/**
+ * 流式请求：边收边把增量回调出去，最后把分片拼回一条完整的 message。
+ * 工具调用是分片下发的（id / name / arguments 拆在不同帧里），按 `index` 拼装。
+ */
+async function callDeepSeekStream(
+  messages: LLMMessage[],
+  cfg: AgentConfig,
+  toolsSpec: any[] | null,
+  onDelta?: (d: AgentDelta) => void,
+): Promise<StreamOutcome> {
+  const resp = await postChat(cfg, buildBody(messages, cfg, toolsSpec, true))
+
+  const content: string[] = []
+  const calls: any[] = []
+  const reasonings: string[] = []
+  let usage: TokenUsage | undefined
+
+  const consumeJson = (payload: string) => {
+    let j: any = null
+    try {
+      j = JSON.parse(payload)
+    } catch {
+      return // 半截帧，忽略
+    }
+    if (!j || typeof j !== "object") return
+    const u = readUsage(j.usage)
+    if (u) usage = u
+    const choice = j.choices?.[0]
+    const delta = choice?.delta ?? choice?.message
+    if (!delta) return
+
+    // DeepSeek 思考模式：reasoning_content；有的兼容实现叫 reasoning。
+    const think =
+      typeof delta.reasoning_content === "string"
+        ? delta.reasoning_content
+        : typeof delta.reasoning === "string"
+          ? delta.reasoning
+          : ""
+    if (think) {
+      reasonings.push(think)
+      onDelta?.({ type: "reasoning", content: think })
+    }
+
+    if (typeof delta.content === "string" && delta.content) {
+      content.push(delta.content)
+      onDelta?.({ type: "text", content: delta.content })
+    }
+
+    for (const tc of delta.tool_calls ?? []) {
+      const index = typeof tc?.index === "number" ? tc.index : 0
+      while (calls.length <= index) {
+        calls.push({ id: "", type: "function", function: { name: "", arguments: "" } })
+      }
+      const slot = calls[index]
+      if (tc.id) slot.id = tc.id
+      if (tc.type) slot.type = tc.type
+      if (tc.function?.name) slot.function.name += tc.function.name
+      if (tc.function?.arguments) slot.function.arguments += tc.function.arguments
+    }
+  }
+
+  const reader: any = (resp.body as any)?.getReader?.()
+  if (reader) {
+    const decoder = new TextDecoder()
+    let buffer = ""
+    while (true) {
+      const chunk = await reader.read()
+      if (!chunk || chunk.done) break
+      buffer += decoder.decode(chunk.value, { stream: true })
+      let cut = buffer.indexOf("\n\n")
+      while (cut >= 0) {
+        const frame = buffer.slice(0, cut)
+        buffer = buffer.slice(cut + 2)
+        eachSsePayload(frame, consumeJson)
+        cut = buffer.indexOf("\n\n")
+      }
+    }
+    // 收尾：把解码器里残留的半个多字节字符和最后一段没带空行的帧吐出来
+    buffer += decoder.decode()
+    eachSsePayload(buffer, consumeJson)
+  } else {
+    // 服务端没给流式响应体：整段文本可能仍是 SSE，也可能就是一段 JSON。
+    const raw = await resp.text()
+    if (raw.indexOf("data:") >= 0) {
+      for (const frame of raw.split("\n\n")) eachSsePayload(frame, consumeJson)
+    } else {
+      consumeJson(raw)
+    }
+  }
+
+  const message: any = { role: "assistant", content: content.join("") }
+  const toolCalls = calls.filter((c) => c.function.name || c.function.arguments)
+  if (toolCalls.length > 0) {
+    for (const c of toolCalls) {
+      if (!c.id) c.id = "call_" + Math.random().toString(36).slice(2, 10)
+    }
+    message.tool_calls = toolCalls
+  }
+  return { message, reasoning: reasonings.join(""), usage }
 }
 
 function buildMessages(
@@ -112,8 +273,10 @@ export type RunAgentHooks = {
   onEvent?: (e: AgentEvent) => void
   /** 一次工具调用结束，带完整记录（参数 / 结果 / 成败 / 耗时）。 */
   onStep?: (s: ToolStep) => void
-  /** 模型吐出的推理过程（思考模式下每轮都可能有一段）。 */
+  /** 模型吐出的整段推理（每轮一次；流式下用 onDelta 更好，别两个都接）。 */
   onReasoning?: (text: string) => void
+  /** 流式增量：正文与推理边生成边回调（打字机效果）。 */
+  onDelta?: (d: AgentDelta) => void
 }
 
 /** 兼容旧写法：第 4 个参数也可以直接传一个 onEvent 回调。 */
@@ -404,6 +567,24 @@ export async function runAgent(
   const reasonings: string[] = []
   let reply = ""
   let resolved = false
+  /** 服务端一旦表现出不支持流式，本轮剩下的请求就都退回一次性。 */
+  let streaming = true
+  let usage: TokenUsage | undefined
+
+  const addUsage = (u?: TokenUsage) => {
+    if (!u) return
+    if (!usage) {
+      usage = { ...u }
+      return
+    }
+    usage = {
+      inputTokens: usage.inputTokens + u.inputTokens,
+      outputTokens: usage.outputTokens + u.outputTokens,
+      totalTokens: usage.totalTokens + u.totalTokens,
+      reasoningTokens: (usage.reasoningTokens ?? 0) + (u.reasoningTokens ?? 0) || undefined,
+      cachedInputTokens: (usage.cachedInputTokens ?? 0) + (u.cachedInputTokens ?? 0) || undefined,
+    }
+  }
 
   // DeepSeek 思考模式把推理放在 reasoning_content（有的兼容实现叫 reasoning）。
   const noteReasoning = (msg: any) => {
@@ -415,10 +596,44 @@ export async function runAgent(
     }
   }
 
-  for (let i = 0; i < maxRounds; i++) {
-    const data = await callDeepSeek(messages, cfg, specs)
+  /** 向模型要一轮回复：优先流式（打字机），服务端不支持就退回一次性请求。 */
+  const ask = async (toolSpecs: any[] | null): Promise<any> => {
+    if (streaming) {
+      let firstSegment = true
+      try {
+        const out = await callDeepSeekStream(messages, cfg, toolSpecs, (d) => {
+          if (d.type === "reasoning") {
+            const newSegment = firstSegment
+            firstSegment = false
+            hooks.onDelta?.({ type: "reasoning", content: d.content, newSegment })
+            return
+          }
+          hooks.onDelta?.(d)
+        })
+        addUsage(out.usage)
+        const t = out.reasoning.trim()
+        if (t) {
+          reasonings.push(t)
+          hooks.onReasoning?.(t)
+        }
+        return out.message ?? {}
+      } catch (e: any) {
+        // 接口本身报错（401 / 模型名不对…）直接抛给用户；其余当成「这个服务端不支持流式」。
+        if (e?.httpStatus) throw e
+        streaming = false
+        hooks.onDelta?.({ type: "text", content: "", reset: true })
+      }
+    }
+
+    const data = await callDeepSeek(messages, cfg, toolSpecs)
+    addUsage(readUsage(data?.usage))
     const msg = data?.choices?.[0]?.message ?? {}
     noteReasoning(msg)
+    return msg
+  }
+
+  for (let i = 0; i < maxRounds; i++) {
+    const msg = await ask(specs)
     const toolCalls: any[] = msg.tool_calls ?? []
 
     if (toolCalls.length === 0) {
@@ -440,9 +655,7 @@ export async function runAgent(
   }
 
   if (!resolved) {
-    const data = await callDeepSeek(messages, cfg, null)
-    const msg = data?.choices?.[0]?.message ?? {}
-    noteReasoning(msg)
+    const msg = await ask(null)
     reply = msg.content ?? ""
   }
 
@@ -450,6 +663,7 @@ export async function runAgent(
   const assistant: ChatMessage = { role: "assistant", content: reply }
   if (reasoning) assistant.reasoning = reasoning
   if (steps.length > 0) assistant.steps = steps
+  if (usage) assistant.usage = usage
 
   const newHistory: ChatMessage[] = [
     ...history,

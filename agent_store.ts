@@ -93,6 +93,22 @@ export interface ChatMessage {
   reasoning?: string
   /** 这一轮里 AI 调用过的工具，按时间顺序。 */
   steps?: ToolStep[]
+  /** 这一轮的 token 用量（流式响应最后一帧带回来的 usage）。 */
+  usage?: TokenUsage
+}
+
+/** 一次请求的 token 用量（不同厂商字段名不一，读回来时归一化）。 */
+export interface TokenUsage {
+  /** 输入 token（prompt_tokens）。 */
+  inputTokens: number
+  /** 输出 token（completion_tokens）。 */
+  outputTokens: number
+  /** 合计 token。 */
+  totalTokens: number
+  /** 其中属于思考（reasoning_tokens）的部分。 */
+  reasoningTokens?: number
+  /** 命中缓存的输入 token。 */
+  cachedInputTokens?: number
 }
 
 /** 一个会话（一段独立的对话，各自带历史）。 */
