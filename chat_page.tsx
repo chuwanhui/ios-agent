@@ -11,26 +11,14 @@ import { finishActivity, startThinking, updateThinking } from "./live_activity"
 import { ConfigPage } from "./config_page"
 import { VoicePage } from "./voice_page"
 import { DRAWER_WIDTH, Sidebar } from "./sidebar"
+import { Avatar, AvatarSpec } from "./avatar"
 
 function excerpt(text: string): string {
   const t = (text ?? "").trim()
   return t.length > 60 ? t.slice(0, 60) + "…" : t
 }
 
-/** 角色头像：一个圆形里的 emoji。 */
-function Avatar({ emoji, size = 34 }: { emoji: string; size?: number }) {
-  return (
-    <VStack
-      frame={{ width: size, height: size }}
-      background="secondarySystemFill"
-      clipShape="circle"
-    >
-      <Text font={size > 44 ? "largeTitle" : "callout"}>{emoji}</Text>
-    </VStack>
-  )
-}
-
-function Bubble({ message, emoji }: { message: ChatMessage; emoji: string }) {
+function Bubble({ message, avatar }: { message: ChatMessage; avatar: AvatarSpec }) {
   const isUser = message.role === "user"
   return (
     <HStack
@@ -39,7 +27,7 @@ function Bubble({ message, emoji }: { message: ChatMessage; emoji: string }) {
       padding={{ horizontal: 12, vertical: 4 }}
       frame={{ maxWidth: "infinity" }}
     >
-      {isUser ? <Spacer /> : <Avatar emoji={emoji} />}
+      {isUser ? <Spacer /> : <Avatar spec={avatar} />}
       <VStack
         padding={{ horizontal: 14, vertical: 10 }}
         background={isUser ? "systemBlue" : "secondarySystemFill"}
@@ -53,7 +41,7 @@ function Bubble({ message, emoji }: { message: ChatMessage; emoji: string }) {
   )
 }
 
-function ThinkingBubble({ emoji }: { emoji: string }) {
+function ThinkingBubble({ avatar }: { avatar: AvatarSpec }) {
   return (
     <HStack
       spacing={8}
@@ -61,7 +49,7 @@ function ThinkingBubble({ emoji }: { emoji: string }) {
       padding={{ horizontal: 12, vertical: 4 }}
       frame={{ maxWidth: "infinity" }}
     >
-      <Avatar emoji={emoji} />
+      <Avatar spec={avatar} />
       <HStack
         spacing={8}
         padding={{ horizontal: 14, vertical: 10 }}
@@ -77,14 +65,14 @@ function ThinkingBubble({ emoji }: { emoji: string }) {
 }
 
 /** 空会话时的「角色登场」界面。 */
-function EmptyState({ name, emoji, greet }: { name: string; emoji: string; greet: string }) {
+function EmptyState({ name, avatar, greet }: { name: string; avatar: AvatarSpec; greet: string }) {
   return (
     <VStack
       spacing={12}
       padding={{ horizontal: 28, vertical: 56 }}
       frame={{ maxWidth: "infinity" }}
     >
-      <Avatar emoji={emoji} size={76} />
+      <Avatar spec={avatar} size={76} />
       <Text font="title3" fontWeight="bold">{name}</Text>
       <Text font="subheadline" foregroundStyle="secondaryLabel">{greet}</Text>
     </VStack>
@@ -221,7 +209,7 @@ export function ChatPage() {
   }
 
   const sendEnabled = !busy && input.trim().length > 0
-  const emoji = cfg.agentEmoji || "✨"
+  const avatar: AvatarSpec = { emoji: cfg.agentEmoji || "✨", path: cfg.avatarPath }
 
   return (
     <NavigationStack>
@@ -273,12 +261,12 @@ export function ChatPage() {
         <ScrollView defaultScrollAnchor="bottom" scrollDismissesKeyboard="interactively">
           <VStack spacing={0} padding={{ top: 12, bottom: 16 }}>
             {messages.length === 0 ? (
-              <EmptyState name={cfg.agentName || "智能体"} emoji={emoji} greet={cfg.greetText} />
+              <EmptyState name={cfg.agentName || "智能体"} avatar={avatar} greet={cfg.greetText} />
             ) : null}
             {messages.map((m, i) => (
-              <Bubble key={"m" + i} message={m} emoji={emoji} />
+              <Bubble key={"m" + i} message={m} avatar={avatar} />
             ))}
-            {busy ? <ThinkingBubble emoji={emoji} /> : null}
+            {busy ? <ThinkingBubble avatar={avatar} /> : null}
           </VStack>
         </ScrollView>
 
@@ -330,7 +318,7 @@ export function ChatPage() {
           <Sidebar
             store={store}
             agentName={cfg.agentName || "小助"}
-            agentEmoji={emoji}
+            avatar={avatar}
             onSelect={selectSession}
             onNew={newSession}
             onDelete={deleteSession}

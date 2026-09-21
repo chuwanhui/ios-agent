@@ -12,6 +12,7 @@
 | 模块 | 说明 |
 | --- | --- |
 | **聊天页** | 参考 DeepSeek / ChatGPT 的布局：角色形象、多会话、左侧隐藏抽屉放历史 |
+| **自定义头像** | 设置页从相册选照片或拍一张，自动方形裁剪 + 缩到 512pt；没照片时用 emoji，文件丢了自动回退 |
 | **语音通话模式** | 聆听 → 思考 → 朗读 → 再聆听，自动循环，点头像可打断朗读 |
 | **快捷指令工具** | 一个真实快捷指令 = 一个工具（`shortcuts://` 单向触发）|
 | **MCP 工具** | 远程 MCP 服务器（Streamable HTTP），带**返回值**的 JSON-RPC 工具 |
@@ -25,6 +26,7 @@
 1. 在 iPhone 上安装 **Scripting**，把本仓库放到 `<AppGroup>/Documents/scripts/` 下（目录名 `智能体`）。
 2. 打开脚本 → 右上角**设置** → 填 DeepSeek **API Key**（接口地址 / 路径 / 模型名都有默认值）。
 3. 可选：
+   - 设置 → 角色：改助手名字，点「从相册选择照片」或「拍一张照片」给它换个真头像
    - 设置 → 添加 MCP 服务器（例如 `https://mcp.deepwiki.com/mcp`）
    - 设置 → 知识库：把资料丢进「文件」App 的 `Scripting/知识库`，再点「扫描并导入」
    - 设置 → 技能：把含 `SKILL.md` 的文件夹或 zip 丢进 `Scripting/技能`，再点「扫描并导入」
@@ -40,6 +42,7 @@
 ├── chat_page.tsx        聊天 UI（气泡 / 输入栏 / 工具栏 / 抽屉）
 ├── voice_page.tsx       语音通话模式
 ├── sidebar.tsx          左侧抽屉
+├── avatar.tsx           角色头像（照片 / emoji，选图落盘）
 ├── config_page.tsx      设置页
 ├── kb_page.tsx          知识库管理页
 ├── skills_page.tsx      技能管理页
@@ -55,6 +58,7 @@
 ## 数据与隐私
 
 - **API Key 不在本仓库里**：配置存在 `<AppGroup>/Documents/agent/config.json`，会话在 `sessions.json`，知识库索引在 `kb/index.json`，技能在 `skills.json` + `skills/<id>/`。仓库只含代码。
+- 头像照片只存在本机 `<AppGroup>/Documents/agent/avatar.png`（不会上传；选图时的暂存文件 `avatar-pending.png` 在取消或保存后会被清掉）。
 - 网络请求只发往你自己配置的接口（DeepSeek / 你填的 MCP 服务器）。
 - 知识库检索**完全在本机**完成，不调用任何模型或第三方服务。
 - 会话历史默认只保留最近 50 条（可配置），不会无限增长。

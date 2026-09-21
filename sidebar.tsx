@@ -8,6 +8,7 @@ import {
   VStack,
 } from "scripting"
 import type { SessionStore } from "./agent_store"
+import { Avatar, AvatarSpec } from "./avatar"
 
 export const DRAWER_WIDTH = 288
 /** 抽屉右侧两角的圆角（左侧贴屏幕边，保持直角）*/
@@ -57,7 +58,7 @@ export function timeLabel(ts: number): string {
 interface Props {
   store?: SessionStore
   agentName?: string
-  agentEmoji?: string
+  avatar?: AvatarSpec
   onSelect?: (id: string) => void
   onNew?: () => void
   onDelete?: (id: string) => void
@@ -67,7 +68,7 @@ interface Props {
 export function Sidebar({
   store,
   agentName = "小助",
-  agentEmoji = "✨",
+  avatar = { emoji: "✨" },
   onSelect = () => {},
   onNew = () => {},
   onDelete = () => {},
@@ -93,13 +94,7 @@ export function Sidebar({
         padding={{ horizontal: 20, top: 22, bottom: 18 }}
         frame={{ maxWidth: "infinity", alignment: "leading" }}
       >
-        <VStack
-          frame={{ width: 46, height: 46 }}
-          background="tertiarySystemFill"
-          clipShape="circle"
-        >
-          <Text font="title3">{agentEmoji}</Text>
-        </VStack>
+        <Avatar spec={avatar} size={46} font="title3" background="tertiarySystemFill" />
         <VStack alignment="leading" spacing={3}>
           <Text font="title3" fontWeight="semibold" lineLimit={1}>
             {agentName}

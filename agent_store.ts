@@ -62,6 +62,8 @@ export interface AgentConfig {
   agentName: string
   agentEmoji: string
   greetText: string
+  /** 用户上传的头像图片路径（图片存在 appGroup，这里只存路径）；为空则用 emoji。 */
+  avatarPath?: string
 }
 
 export interface ChatMessage {
@@ -184,7 +186,7 @@ export const CONFIG_KEYS: string[] = [
   "apiKey", "baseUrl", "apiPath", "model", "systemPrompt",
   "maxHistory", "speakReply", "maxToolRounds", "thinkingEnabled",
   "reasoningEffort", "tools", "mcpServers", "kbEnabled", "skillsEnabled",
-  "agentName", "agentEmoji", "greetText",
+  "agentName", "agentEmoji", "greetText", "avatarPath",
 ]
 
 /**

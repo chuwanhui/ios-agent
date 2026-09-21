@@ -7,6 +7,7 @@ import {
 } from "./agent_store"
 import { dictate, runAgent } from "./agent_core"
 import { finishActivity, startThinking, updateThinking } from "./live_activity"
+import { Avatar, AvatarSpec } from "./avatar"
 
 /**
  * 「语音通话」模式 —— 参考 ChatGPT 的语音模式：
@@ -50,7 +51,7 @@ export function VoicePage({ cfg, onStore, onClose }: Props) {
   const [note, setNote] = useState("")
 
   const name = cfg.agentName || "智能体"
-  const emoji = cfg.agentEmoji || "✨"
+  const avatar: AvatarSpec = { emoji: cfg.agentEmoji || "✨", path: cfg.avatarPath }
 
   /** 一轮：听 → 想 → 说。 */
   async function turn(): Promise<void> {
@@ -179,16 +180,12 @@ export function VoicePage({ cfg, onStore, onClose }: Props) {
 
       {/* 中间：头像 + 状态 + 字幕 */}
       <VStack spacing={16} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
-        <VStack
-          frame={{ width: 132, height: 132 }}
+        <Avatar
+          spec={avatar}
+          size={132}
           background={pulsing ? "secondarySystemFill" : "tertiarySystemFill"}
-          clipShape="circle"
           onTapGesture={interrupt}
-        >
-          <Text font="largeTitle" scaleEffect={2}>
-            {emoji}
-          </Text>
-        </VStack>
+        />
 
         <Text font="headline">{name}</Text>
 

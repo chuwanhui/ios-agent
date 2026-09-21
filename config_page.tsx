@@ -1,5 +1,6 @@
 import {
-  Button, Form, NavigationStack, Section, SecureField, Text, TextField, Toggle, VStack, useState,
+  Button, Form, HStack, NavigationStack, Section, SecureField, Spacer, Text, TextField, Toggle,
+  VStack, useState,
 } from "scripting"
 import {
   AgentConfig, AgentTool, McpServer, loadConfig, makeMcpServer, saveConfig, validateConfig,
@@ -9,6 +10,10 @@ import { kbStats } from "./kb_store"
 import { skillCounts } from "./skills_store"
 import { KbPage } from "./kb_page"
 import { SkillsPage } from "./skills_page"
+import {
+  AVATAR_PATH, Avatar, PENDING_AVATAR_PATH, captureAvatarPhoto, chooseAvatarFromPhotos,
+  commitAvatar, discardAvatar, removeAvatarFile,
+} from "./avatar"
 
 type ToolRow = Omit<AgentTool, "paramsHint"> & { id: string; paramsHint: string }
 
@@ -30,6 +35,8 @@ interface FormState {
   agentName: string
   agentEmoji: string
   greetText: string
+  /** 头像图片路径；空 = 用 emoji。选择照片时先指向暂存文件，保存时才转正。 */
+  avatarPath: string
   // 模型
   apiKey: string
   baseUrl: string
@@ -53,6 +60,7 @@ function toFormState(cfg: AgentConfig): FormState {
     agentName: cfg.agentName,
     agentEmoji: cfg.agentEmoji,
     greetText: cfg.greetText,
+    avatarPath: cfg.avatarPath ?? "",
     apiKey: cfg.apiKey,
     baseUrl: cfg.baseUrl,
     apiPath: cfg.apiPath,
@@ -97,6 +105,38 @@ export function ConfigPage({ onClose = () => {} }: Props) {
 
   function removeTool(index: number) {
     patch({ tools: state.tools.filter((_, i) => i !== index) })
+  }
+
+  // —— 头像 ——
+
+  async function pickAvatar() {
+    try {
+      const path = await chooseAvatarFromPhotos()
+      if (path) patch({ avatarPath: path })
+    } catch (e: any) {
+      Dialog.alert({ message: "选择照片失败：" + (e?.message ?? String(e)) })
+    }
+  }
+
+  async function shootAvatar() {
+    try {
+      const path = await captureAvatarPhoto()
+      if (path) patch({ avatarPath: path })
+    } catch (e: any) {
+      Dialog.alert({ message: "拍照失败：" + (e?.message ?? String(e)) })
+    }
+  }
+
+  /** 去掉自定义照片，回到 emoji。 */
+  function dropAvatar() {
+    discardAvatar()
+    patch({ avatarPath: "" })
+  }
+
+  /** 取消：丢掉选了但没保存的照片。 */
+  function cancel() {
+    discardAvatar()
+    onClose()
   }
 
   function updateServer(id: string, p: Partial<McpServer>) {
@@ -178,10 +218,20 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       })
     }
 
+    // 头像：暂存文件转正；没选照片就把旧文件删掉
+    let avatarPath = state.avatarPath.trim()
+    if (avatarPath === PENDING_AVATAR_PATH) {
+      avatarPath = commitAvatar() ? AVATAR_PATH : ""
+    } else if (avatarPath !== AVATAR_PATH) {
+      avatarPath = ""
+    }
+    if (!avatarPath) removeAvatarFile()
+
     const cfg: AgentConfig = {
       ...loadConfig(),
       agentName: state.agentName.trim() || "小助",
       agentEmoji: state.agentEmoji.trim() || "✨",
+      avatarPath: avatarPath || undefined,
       greetText: state.greetText.trim(),
       apiKey: state.apiKey.trim(),
       baseUrl: state.baseUrl.trim(),
@@ -211,7 +261,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
         navigationTitle="设置"
         navigationBarTitleDisplayMode="inline"
         toolbar={{
-          topBarLeading: <Button title="取消" action={onClose} />,
+          topBarLeading: <Button title="取消" action={cancel} />,
           topBarTrailing: <Button title="保存" action={save} fontWeight="semibold" />,
         }}
         sheet={[
@@ -232,7 +282,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             header={<Text>角色</Text>}
             footer={
               <Text>
-                助手名字会显示在聊天页顶部和左侧侧边栏；头像填一个 emoji 就行，例如 ✨ 🐱 🤖 🧠。改完点「保存」生效。
+                助手名字会显示在聊天页顶部和左侧侧边栏。头像可以上传一张照片，也可以只填一个 emoji（✨ 🐱 🤖 🧠）。改完点「保存」生效。
               </Text>
             }
           >
@@ -242,8 +292,26 @@ export function ConfigPage({ onClose = () => {} }: Props) {
               prompt="小助"
               onChanged={(v) => patch({ agentName: v })}
             />
+            <HStack spacing={14} padding={{ vertical: 4 }} frame={{ maxWidth: "infinity" }}>
+              <Avatar
+                spec={{ emoji: state.agentEmoji.trim() || "✨", path: state.avatarPath }}
+                size={56}
+              />
+              <VStack alignment="leading" spacing={2}>
+                <Text>助手头像</Text>
+                <Text font="caption" foregroundStyle="secondaryLabel">
+                  {state.avatarPath ? "使用自定义照片" : "当前是 emoji"}
+                </Text>
+              </VStack>
+              <Spacer />
+            </HStack>
+            <Button title="从相册选择照片" action={pickAvatar} />
+            <Button title="拍一张照片" action={shootAvatar} />
+            {state.avatarPath ? (
+              <Button title="恢复 emoji 头像" role="destructive" action={dropAvatar} />
+            ) : null}
             <TextField
-              title="助手头像"
+              title="头像 emoji"
               value={state.agentEmoji}
               prompt="✨"
               onChanged={(v) => patch({ agentEmoji: v })}
