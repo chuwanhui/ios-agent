@@ -1,7 +1,7 @@
 import { Intent, Script } from "scripting"
 import { loadConfig, loadStore, saveStore, upsertSession, withCurrentSession, capMessages, deriveTitle, tryApplyConfigJson } from "./agent_store"
 import { runAgent, dictate } from "./agent_core"
-import { startThinking, finishActivity } from "./live_activity"
+import { startThinking, updateThinking, finishActivity, rememberReply } from "./live_activity"
 
 function excerpt(text: string): string {
   const t = (text ?? "").trim()
@@ -59,7 +59,9 @@ async function run() {
 
     const history = withCurrentSession(loadStore())
     const session = history.session
-    const { reply, newHistory } = await runAgent(userText, cfg, session.messages)
+    const { reply, newHistory } = await runAgent(userText, cfg, session.messages, (e) => {
+      void updateThinking(`正在调用「${e.target}」…`)
+    })
 
     const capped = capMessages(newHistory, cfg.maxHistory)
     saveStore(
@@ -72,6 +74,7 @@ async function run() {
     )
 
     await finishActivity("done", excerpt(reply) || "完成")
+    rememberReply(reply)
 
     if (cfg.speakReply) {
       await Speech.speak(reply)

@@ -3,11 +3,11 @@ import {
   Text, TextField, Toolbar, ToolbarItem, VStack, ZStack, useState,
 } from "scripting"
 import {
-  AgentConfig, ChatMessage, SessionStore, capMessages, deriveTitle, loadConfig, loadStore,
-  makeSession, removeSession, saveStore, upsertSession, withCurrentSession,
+  AgentConfig, ChatMessage, SessionStore, ToolStep, capMessages, deriveTitle, loadConfig,
+  loadStore, makeSession, removeSession, saveStore, upsertSession, withCurrentSession,
 } from "./agent_store"
-import { dictate, runAgent } from "./agent_core"
-import { finishActivity, startThinking, updateThinking } from "./live_activity"
+import { dictate, runAgent, toolKindLabel } from "./agent_core"
+import { finishActivity, rememberReply, startThinking, updateThinking } from "./live_activity"
 import { ConfigPage } from "./config_page"
 import { VoicePage } from "./voice_page"
 import { DRAWER_WIDTH, Sidebar } from "./sidebar"
@@ -16,6 +16,114 @@ import { Avatar, AvatarSpec } from "./avatar"
 function excerpt(text: string): string {
   const t = (text ?? "").trim()
   return t.length > 60 ? t.slice(0, 60) + "…" : t
+}
+
+/** 过程面板里嵌套小卡片的底色（iOS 单色风格，不用蓝色强调）。 */
+const STEP_FILL = "rgba(120,120,128,0.12)"
+const CARD_FILL = "rgba(120,120,128,0.08)"
+
+/** 一次工具调用：一行摘要，点开看参数与返回结果。 */
+export function StepRow({ step, defaultOpen = false }: { step: ToolStep; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <VStack
+      spacing={6}
+      alignment="leading"
+      padding={{ horizontal: 10, vertical: 8 }}
+      background={STEP_FILL}
+      clipShape={{ type: "rect", cornerRadius: 12 }}
+      frame={{ maxWidth: "infinity" }}
+      onTapGesture={() => setOpen((v) => !v)}
+    >
+      <HStack spacing={6}>
+        <Text font="caption2" fontWeight="semibold" foregroundStyle="secondaryLabel">
+          {toolKindLabel(step.kind)}
+        </Text>
+        {step.target && step.target !== toolKindLabel(step.kind) ? (
+          <Text font="caption" foregroundStyle="label" lineLimit={1}>{step.target}</Text>
+        ) : null}
+        <Spacer />
+        <Image
+          systemName={step.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"}
+          font="caption2"
+          foregroundStyle={step.ok ? "systemGreen" : "systemOrange"}
+        />
+        <Text font="caption2" foregroundStyle="tertiaryLabel">{step.ms}ms</Text>
+      </HStack>
+      {open && step.args ? (
+        <VStack spacing={3} alignment="leading" frame={{ maxWidth: "infinity", alignment: "leading" }}>
+          <Text font="caption2" foregroundStyle="tertiaryLabel">调用参数</Text>
+          <Text font="caption" foregroundStyle="secondaryLabel">{step.args}</Text>
+        </VStack>
+      ) : null}
+      {open && step.result ? (
+        <VStack spacing={3} alignment="leading" frame={{ maxWidth: "infinity", alignment: "leading" }}>
+          <Text font="caption2" foregroundStyle="tertiaryLabel">返回结果</Text>
+          <Text font="caption" foregroundStyle="secondaryLabel">{step.result}</Text>
+        </VStack>
+      ) : null}
+    </VStack>
+  )
+}
+
+/**
+ * 「AI 过程」卡片：思考过程 + 每次工具调用的参数与结果。
+ * 整卡可收起；实时那一轮默认展开，历史消息默认收起。
+ */
+export function ProcessCard({
+  steps, reasoning, live, defaultOpen, stepDefaultOpen = false,
+}: {
+  steps: ToolStep[]
+  reasoning: string
+  live: boolean
+  defaultOpen: boolean
+  stepDefaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  const count = steps.length
+  const title = live
+    ? count > 0
+      ? `正在处理 · 已调用 ${count} 个工具`
+      : "正在思考"
+    : count > 0
+      ? `AI 过程 · 思考 + ${count} 个工具`
+      : "AI 过程 · 思考"
+
+  return (
+    <VStack
+      spacing={8}
+      alignment="leading"
+      padding={{ horizontal: 12, vertical: 10 }}
+      background={CARD_FILL}
+      clipShape={{ type: "rect", cornerRadius: 14 }}
+      frame={{ maxWidth: "infinity" }}
+      onTapGesture={() => setOpen((v) => !v)}
+    >
+      <HStack spacing={6}>
+        <Image systemName="sparkles" font="caption2" foregroundStyle="secondaryLabel" />
+        <Text font="footnote" fontWeight="semibold" foregroundStyle="label" lineLimit={1}>
+          {title}
+        </Text>
+        <Spacer />
+        <Image
+          systemName={open ? "chevron.up" : "chevron.down"}
+          font="caption2"
+          foregroundStyle="tertiaryLabel"
+        />
+      </HStack>
+      {open ? (
+        <VStack spacing={8} alignment="leading" frame={{ maxWidth: "infinity", alignment: "leading" }}>
+          {reasoning ? (
+            <VStack spacing={3} alignment="leading" frame={{ maxWidth: "infinity", alignment: "leading" }}>
+              <Text font="caption2" foregroundStyle="tertiaryLabel">思考过程</Text>
+              <Text font="caption" foregroundStyle="secondaryLabel">{reasoning}</Text>
+            </VStack>
+          ) : null}
+          {steps.map((s, i) => <StepRow key={"s" + i} step={s} defaultOpen={stepDefaultOpen} />)}
+        </VStack>
+      ) : null}
+    </VStack>
+  )
 }
 
 function Bubble({ message, avatar }: { message: ChatMessage; avatar: AvatarSpec }) {
@@ -41,7 +149,19 @@ function Bubble({ message, avatar }: { message: ChatMessage; avatar: AvatarSpec 
   )
 }
 
-function ThinkingBubble({ avatar }: { avatar: AvatarSpec }) {
+/** 助手的消息：过程卡片在气泡上方，共用左侧一个头像。 */
+export function AssistantMessage({
+  message, avatar, showSteps, defaultOpen = false, stepDefaultOpen = false,
+}: {
+  message: ChatMessage
+  avatar: AvatarSpec
+  showSteps: boolean
+  defaultOpen?: boolean
+  stepDefaultOpen?: boolean
+}) {
+  const steps = message.steps ?? []
+  const reasoning = message.reasoning ?? ""
+  const hasProcess = steps.length > 0 || reasoning.length > 0
   return (
     <HStack
       spacing={8}
@@ -50,15 +170,62 @@ function ThinkingBubble({ avatar }: { avatar: AvatarSpec }) {
       frame={{ maxWidth: "infinity" }}
     >
       <Avatar spec={avatar} />
-      <HStack
-        spacing={8}
-        padding={{ horizontal: 14, vertical: 10 }}
-        background="secondarySystemFill"
-        clipShape={{ type: "rect", cornerRadius: 18 }}
-      >
-        <ProgressView controlSize="small" />
-        <Text font="footnote" foregroundStyle="secondaryLabel">思考中…</Text>
-      </HStack>
+      <VStack spacing={6} frame={{ maxWidth: 280 }} alignment="leading">
+        {showSteps && hasProcess ? (
+          <ProcessCard
+            steps={steps}
+            reasoning={reasoning}
+            live={false}
+            defaultOpen={defaultOpen}
+            stepDefaultOpen={stepDefaultOpen}
+          />
+        ) : null}
+        <HStack spacing={0}>
+          <VStack
+            padding={{ horizontal: 14, vertical: 10 }}
+            background="secondarySystemFill"
+            clipShape={{ type: "rect", cornerRadius: 18 }}
+          >
+            <Text foregroundStyle="label">{message.content}</Text>
+          </VStack>
+          <Spacer />
+        </HStack>
+      </VStack>
+      <Spacer />
+    </HStack>
+  )
+}
+
+/** 正在跑的这一轮：过程实时长出来。 */
+export function LiveThinking({
+  avatar, reasoning, steps, showSteps,
+}: { avatar: AvatarSpec; reasoning: string; steps: ToolStep[]; showSteps: boolean }) {
+  const hasProcess = steps.length > 0 || reasoning.length > 0
+  return (
+    <HStack
+      spacing={8}
+      alignment="top"
+      padding={{ horizontal: 12, vertical: 4 }}
+      frame={{ maxWidth: "infinity" }}
+    >
+      <Avatar spec={avatar} />
+      <VStack spacing={6} frame={{ maxWidth: 280 }} alignment="leading">
+        {showSteps && hasProcess ? (
+          <ProcessCard steps={steps} reasoning={reasoning} live={true} defaultOpen={true} />
+        ) : null}
+        <HStack spacing={0}>
+          <HStack
+            spacing={8}
+            padding={{ horizontal: 14, vertical: 10 }}
+            background="secondarySystemFill"
+            clipShape={{ type: "rect", cornerRadius: 18 }}
+          >
+            <ProgressView controlSize="small" />
+            <Text font="footnote" foregroundStyle="secondaryLabel">思考中…</Text>
+          </HStack>
+          <Spacer />
+        </HStack>
+      </VStack>
       <Spacer />
     </HStack>
   )
@@ -88,6 +255,9 @@ export function ChatPage() {
   const [showSettings, setShowSettings] = useState(false)
   const [showVoice, setShowVoice] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  // 正在跑的这一轮的过程（实时画在聊天流里，结束后随消息落库）。
+  const [liveReasoning, setLiveReasoning] = useState("")
+  const [liveSteps, setLiveSteps] = useState<ToolStep[]>([])
 
   const current = store.sessions.find((s) => s.id === store.currentId) ?? null
   const messages = current?.messages ?? []
@@ -155,11 +325,17 @@ export function ChatPage() {
 
     setBusy(true)
     setInput("")
+    setLiveReasoning("")
+    setLiveSteps([])
     await startThinking("正在思考…")
 
     try {
-      const { reply, newHistory } = await runAgent(trimmed, cfg, base.messages, (e) => {
-        void updateThinking(`正在调用「${e.target}」…`)
+      const { reply, newHistory } = await runAgent(trimmed, cfg, base.messages, {
+        onEvent: (e) => {
+          void updateThinking(`正在调用「${e.target}」…`)
+        },
+        onReasoning: (t) => setLiveReasoning((prev) => (prev ? prev + "\n\n" + t : t)),
+        onStep: (s) => setLiveSteps((prev) => [...prev, s]),
       })
       const capped = capMessages(newHistory, cfg.maxHistory)
       apply(
@@ -171,6 +347,7 @@ export function ChatPage() {
         }),
       )
       await finishActivity("done", excerpt(reply) || "完成")
+      rememberReply(reply)
     } catch (e: any) {
       const errMsg = "出错：" + (e?.message ?? String(e))
       const failed: ChatMessage[] = [
@@ -189,6 +366,8 @@ export function ChatPage() {
       await finishActivity("error", excerpt(errMsg) || "出错")
     } finally {
       setBusy(false)
+      setLiveReasoning("")
+      setLiveSteps([])
     }
   }
 
@@ -263,10 +442,26 @@ export function ChatPage() {
             {messages.length === 0 ? (
               <EmptyState name={cfg.agentName || "智能体"} avatar={avatar} greet={cfg.greetText} />
             ) : null}
-            {messages.map((m, i) => (
-              <Bubble key={"m" + i} message={m} avatar={avatar} />
-            ))}
-            {busy ? <ThinkingBubble avatar={avatar} /> : null}
+            {messages.map((m, i) =>
+              m.role === "user" ? (
+                <Bubble key={"m" + i} message={m} avatar={avatar} />
+              ) : (
+                <AssistantMessage
+                  key={"m" + i}
+                  message={m}
+                  avatar={avatar}
+                  showSteps={cfg.showSteps !== false}
+                />
+              ),
+            )}
+            {busy ? (
+              <LiveThinking
+                avatar={avatar}
+                reasoning={liveReasoning}
+                steps={liveSteps}
+                showSteps={cfg.showSteps !== false}
+              />
+            ) : null}
           </VStack>
         </ScrollView>
 

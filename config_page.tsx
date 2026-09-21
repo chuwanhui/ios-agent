@@ -1,9 +1,10 @@
 import {
-  Button, Form, HStack, NavigationStack, Section, SecureField, Spacer, Text, TextField, Toggle,
-  VStack, useState,
+  Button, fetch, Form, HStack, Image, NavigationStack, Picker, Section, SecureField, Spacer, Text,
+  TextField, Toggle, VStack, useState,
 } from "scripting"
 import {
-  AgentConfig, AgentTool, McpServer, loadConfig, makeMcpServer, saveConfig, validateConfig,
+  AgentConfig, AgentTool, DEFAULT_SYSTEM_PROMPT, McpServer, loadConfig, makeMcpServer, saveConfig,
+  validateConfig,
 } from "./agent_store"
 import { listMcpTools } from "./mcp_client"
 import { kbStats } from "./kb_store"
@@ -14,6 +15,24 @@ import {
   AVATAR_PATH, Avatar, PENDING_AVATAR_PATH, captureAvatarPhoto, chooseAvatarFromPhotos,
   commitAvatar, discardAvatar, removeAvatarFile,
 } from "./avatar"
+
+// ———————————————————————— 思考深度 ————————————————————————
+
+type ThinkingTier = "off" | "low" | "medium" | "high"
+
+const TIERS: { key: ThinkingTier; label: string; desc: string; cost: string }[] = [
+  { key: "off", label: "关闭", desc: "不做额外推理，直接给答案", cost: "最快、最省 token" },
+  { key: "low", label: "浅层", desc: "想一点点，适合简单问答", cost: "较快、消耗少" },
+  { key: "medium", label: "标准", desc: "先理一遍再回答，日常够用", cost: "适中" },
+  { key: "high", label: "深度", desc: "反复斟酌，多步任务更稳", cost: "最慢、最费 token" },
+]
+
+/** 把配置里的 thinkingEnabled + reasoningEffort 反解成档位。 */
+function tierOf(cfg: AgentConfig): ThinkingTier {
+  if (!cfg.thinkingEnabled) return "off"
+  const effort = (cfg.reasoningEffort || "").toLowerCase()
+  return effort === "low" || effort === "medium" ? effort : "high"
+}
 
 type ToolRow = Omit<AgentTool, "paramsHint"> & { id: string; paramsHint: string }
 
@@ -43,8 +62,14 @@ interface FormState {
   apiPath: string
   model: string
   // 对话
+  /** 智能体设定：发给模型的系统提示词。 */
   systemPrompt: string
+  /** 上下文聊天记录数量（以文本保存，空值在保存时兜底 50）。 */
   maxHistory: string
+  /** 思考深度档位，保存时映射回 thinkingEnabled + reasoningEffort。 */
+  thinking: ThinkingTier
+  /** 聊天页是否展示 AI 思考 / 工具调用过程。 */
+  showSteps: boolean
   speakReply: boolean
   // 工具
   tools: ToolRow[]
@@ -67,6 +92,8 @@ function toFormState(cfg: AgentConfig): FormState {
     model: cfg.model,
     systemPrompt: cfg.systemPrompt,
     maxHistory: String(cfg.maxHistory),
+    thinking: tierOf(cfg),
+    showSteps: cfg.showSteps !== false,
     speakReply: cfg.speakReply,
     tools: (cfg.tools ?? []).map((t) => toRow(t)),
     mcpServers: (cfg.mcpServers ?? []).map((m) => ({ ...m })),
@@ -85,6 +112,9 @@ export function ConfigPage({ onClose = () => {} }: Props) {
   const [state, setState] = useState<FormState>(() => toFormState(loadConfig()))
   /** 正在测试连接的那个服务器 id（空字符串 = 没有在测试）。 */
   const [testing, setTesting] = useState("")
+  /** 「拉取可用模型」拿到的模型名；空 = 还没拉过（那就不显示下拉）。 */
+  const [models, setModels] = useState<string[]>([])
+  const [fetchingModels, setFetchingModels] = useState(false)
   /** 知识库 / 技能管理页的呈现状态。 */
   const [kbOpen, setKbOpen] = useState(false)
   const [skillsOpen, setSkillsOpen] = useState(false)
@@ -185,6 +215,72 @@ export function ConfigPage({ onClose = () => {} }: Props) {
     }
   }
 
+  /** 上下文条数的说明弹窗（表单里放不下 tooltip，用弹窗替代）。 */
+  function showHistoryTip() {
+    Dialog.alert({
+      title: "上下文聊天记录数量",
+      message: [
+        "每次请求最多带上最近这么多条消息（你发的和助手回的都算）。",
+        "",
+        "调大：助手记得更久，适合长对话；代价是每次请求体更大、更慢、也更费 token。",
+        "调小：更快更省，但助手会「忘掉」前面说过的话。",
+        "",
+        "默认 50 条，一般不用改。",
+      ].join("\n"),
+    })
+  }
+
+  /** 拉模型列表：拿上面的地址和 Key 请求一次 <接口地址>/models。 */
+  async function fetchModels() {
+    const baseUrl = state.baseUrl.trim().replace(/\/+$/, "")
+    if (!baseUrl) {
+      Dialog.alert({ message: "先填接口地址，比如 https://api.deepseek.com" })
+      return
+    }
+    setFetchingModels(true)
+    try {
+      const headers: Record<string, string> = { Accept: "application/json" }
+      const key = state.apiKey.trim()
+      if (key) headers.Authorization = "Bearer " + key
+      const resp = await fetch(baseUrl + "/models", { headers })
+      if (!resp.ok) {
+        const text = await resp.text()
+        Dialog.alert({
+          title: `拉取失败（${resp.status}）`,
+          message: text.slice(0, 400) || "服务端没返回可用模型列表，手动填「模型」就行。",
+        })
+        return
+      }
+      const data: any = await resp.json()
+      const raw: any[] = Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data?.models)
+          ? data.models
+          : Array.isArray(data)
+            ? data
+            : []
+      const list: string[] = []
+      for (const item of raw) {
+        const id = typeof item === "string" ? item : item?.id ?? item?.name
+        if (typeof id === "string" && id.trim() && list.indexOf(id) < 0) list.push(id.trim())
+      }
+      list.sort()
+      if (list.length === 0) {
+        Dialog.alert({
+          title: "没拿到模型",
+          message: "接口返回里没有模型列表，手动填「模型」就行。",
+        })
+        return
+      }
+      setModels(list)
+      if (list.indexOf(state.model) < 0) patch({ model: list[0] })
+    } catch (e: any) {
+      Dialog.alert({ title: "拉取失败", message: e?.message ?? String(e) })
+    } finally {
+      setFetchingModels(false)
+    }
+  }
+
   function save() {
     const tools: AgentTool[] = []
     for (const t of state.tools) {
@@ -237,8 +333,11 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       baseUrl: state.baseUrl.trim(),
       apiPath: state.apiPath.trim(),
       model: state.model.trim(),
-      systemPrompt: state.systemPrompt,
-      maxHistory: parseInt(state.maxHistory, 10) || 50,
+      systemPrompt: state.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT,
+      maxHistory: Math.max(1, parseInt(state.maxHistory, 10) || 50),
+      thinkingEnabled: state.thinking !== "off",
+      reasoningEffort: state.thinking === "off" ? "" : state.thinking,
+      showSteps: state.showSteps,
       speakReply: state.speakReply,
       tools,
       mcpServers,
@@ -325,8 +424,17 @@ export function ConfigPage({ onClose = () => {} }: Props) {
           </Section>
 
           <Section
-            header={<Text>模型</Text>}
-            footer={<Text>API Key 只保存在本机 App 共享目录，不会上传到别处。</Text>}
+            header={<Text>模型接口</Text>}
+            footer={
+              <VStack alignment="leading" spacing={4}>
+                <Text>
+                  API Key：DeepSeek 的形如 sk-xxxxxxxx（32 位字符），在 platform.deepseek.com 的「API Keys」里创建。只保存在本机，不会上传到别处。
+                </Text>
+                <Text>
+                  接口地址：只填到域名（或 /v1）为止，比如 https://api.deepseek.com；请求路径另填，默认 /chat/completions。换成別的 OpenAI 兼容服务时改这两项。
+                </Text>
+              </VStack>
+            }
           >
             <SecureField
               title="API Key"
@@ -337,48 +445,153 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             <TextField
               title="接口地址"
               value={state.baseUrl}
+              prompt="https://api.deepseek.com"
               autocorrectionDisabled
               textInputAutocapitalization="never"
               onChanged={(v) => patch({ baseUrl: v })}
             />
             <TextField
-              title="路径"
+              title="请求路径"
               value={state.apiPath}
+              prompt="/chat/completions"
               autocorrectionDisabled
+              textInputAutocapitalization="never"
               onChanged={(v) => patch({ apiPath: v })}
             />
+          </Section>
+
+          <Section
+            header={<Text>模型</Text>}
+            footer={
+              <Text>
+                点「拉取可用模型」会用上面的地址和 Key 请求一次 /models，把服务端支持的模型列出来；列不出来就手动填。
+              </Text>
+            }
+          >
+            {models.length > 0 ? (
+              <Picker
+                title="模型"
+                pickerStyle="menu"
+                value={state.model}
+                onChanged={(v: string) => patch({ model: v })}
+              >
+                {models.map((m) => (
+                  <Text key={m} tag={m}>
+                    {m}
+                  </Text>
+                ))}
+              </Picker>
+            ) : null}
             <TextField
-              title="模型"
+              title={models.length > 0 ? "模型（手动填写）" : "模型"}
               value={state.model}
+              prompt="deepseek-flash"
               autocorrectionDisabled
               textInputAutocapitalization="never"
               onChanged={(v) => patch({ model: v })}
             />
+            <Button
+              title={fetchingModels ? "正在拉取…" : "拉取可用模型"}
+              systemImage="arrow.down.circle"
+              disabled={fetchingModels}
+              action={fetchModels}
+            />
+            {models.length > 0 ? (
+              <Text font="footnote" foregroundStyle="secondaryLabel">
+                {`已拿到 ${models.length} 个模型`}
+              </Text>
+            ) : null}
           </Section>
 
-          <Section header={<Text>对话</Text>}>
+          <Section
+            header={<Text>思考深度</Text>}
+            footer={
+              <VStack alignment="leading" spacing={4}>
+                {TIERS.map((t) => (
+                  <Text key={t.key}>
+                    {`${state.thinking === t.key ? "●" : "○"} ${t.label}：${t.desc}（${t.cost}）`}
+                  </Text>
+                ))}
+                <Text>
+                  档位越高，模型回答前想得越多：多步任务、需要斟酌工具参数时更准，但也更慢、更费 token。
+                </Text>
+              </VStack>
+            }
+          >
+            <Picker
+              title="思考深度"
+              pickerStyle="segmented"
+              value={state.thinking}
+              onChanged={(v: string) => patch({ thinking: v as ThinkingTier })}
+            >
+              {TIERS.map((t) => (
+                <Text key={t.key} tag={t.key}>
+                  {t.label}
+                </Text>
+              ))}
+            </Picker>
+          </Section>
+
+          <Section
+            header={<Text>智能体设定</Text>}
+            footer={
+              <Text>
+                这段文字就是发给模型的系统提示词，决定它的人设、语气和边界。改坏了点「恢复默认设定」。
+              </Text>
+            }
+          >
             <TextField
               title="系统提示词"
               value={state.systemPrompt}
               axis="vertical"
-              lineLimit={{ max: 8, reservesSpace: true }}
+              lineLimit={{ min: 3, max: 12, reservesSpace: true }}
               onChanged={(v) => patch({ systemPrompt: v })}
             />
+            <Button
+              title="恢复默认设定"
+              systemImage="arrow.counterclockwise"
+              action={() => patch({ systemPrompt: DEFAULT_SYSTEM_PROMPT })}
+            />
+          </Section>
+
+          <Section
+            header={<Text>对话</Text>}
+            footer={
+              <Text>
+                文本聊天不朗读。想边说边听就走右上角「语音」进入语音通话模式（那边会自动朗读回复）。
+              </Text>
+            }
+          >
+            <HStack spacing={8} frame={{ maxWidth: "infinity" }}>
+              <Text>{`上下文聊天记录数量：${state.maxHistory.trim() || "50"} 条`}</Text>
+              <Spacer />
+              <Image
+                systemName="info.circle"
+                foregroundStyle="secondaryLabel"
+                onTapGesture={showHistoryTip}
+              />
+            </HStack>
             <TextField
-              title="历史条数上限"
+              title="条数"
               value={state.maxHistory}
+              prompt="50"
               keyboardType="numberPad"
               onChanged={(v) => patch({ maxHistory: v })}
             />
+            <Toggle
+              title="显示 AI 过程"
+              value={state.showSteps}
+              onChanged={(v) => patch({ showSteps: v })}
+            />
             <Text font="footnote" foregroundStyle="secondaryLabel">
-              文本聊天不朗读。想边说边听就走右上角「语音」进入语音通话模式（那边会自动朗读回复）。
+              打开后每条回复上方会带一张可展开的过程卡片：模型的思考内容，以及每次工具调用的名称、参数和返回结果。关掉就只看最终答复。
             </Text>
           </Section>
 
           {state.tools.map((t, i) => (
             <Section
               key={t.id}
-              header={<Text>{`工具 ${i + 1}${t.name.trim() ? " · " + t.name.trim() : ""}`}</Text>}
+              header={<Text>{`本地快捷指令工具 ${i + 1}${t.name.trim() ? " · " + t.name.trim() : ""}`}</Text>}
             >
               <TextField
                 title="名称"
@@ -419,11 +632,11 @@ export function ConfigPage({ onClose = () => {} }: Props) {
           ))}
 
           <Section
-            header={<Text>工具</Text>}
+            header={<Text>本地快捷指令工具</Text>}
             footer={
               <VStack alignment="leading" spacing={4}>
                 <Text>
-                  一个真实快捷指令 = 一个工具。需要参数就在「参数」里一行写一个「字段名=说明」，模型就会按这些字段名生成参数。
+                  一个真实快捷指令 = 一个「本地快捷指令工具」。需要参数就在「参数」里一行写一个「字段名=说明」，模型就会按这些字段名生成参数。
                 </Text>
                 <Text>
                   调用时脚本把参数拼成 JSON 文本，作为快捷指令的输入传过去（无参数就不传）。所以快捷指令里要接住输入：「从输入获取词典」→「获取词典值」按字段名取值。
@@ -434,9 +647,9 @@ export function ConfigPage({ onClose = () => {} }: Props) {
               </VStack>
             }
           >
-            <Button title="添加工具" systemImage="plus.circle.fill" action={addTool} />
+            <Button title="添加快捷指令工具" systemImage="plus.circle.fill" action={addTool} />
             {state.tools.length === 0 ? (
-              <Text foregroundStyle="secondaryLabel">还没有工具</Text>
+              <Text foregroundStyle="secondaryLabel">还没有本地快捷指令工具</Text>
             ) : null}
           </Section>
 

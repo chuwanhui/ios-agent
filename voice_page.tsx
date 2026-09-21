@@ -6,7 +6,7 @@ import {
   saveStore, upsertSession,
 } from "./agent_store"
 import { dictate, runAgent } from "./agent_core"
-import { finishActivity, startThinking, updateThinking } from "./live_activity"
+import { finishActivity, rememberReply, startThinking, updateThinking } from "./live_activity"
 import { Avatar, AvatarSpec } from "./avatar"
 
 /**
@@ -114,6 +114,7 @@ export function VoicePage({ cfg, onStore, onClose }: Props) {
     }
 
     setLastReply(reply)
+    rememberReply(reply)
     setPhase("speaking")
     await finishActivity(failed ? "error" : "done", excerpt(reply) || "完成")
     if (!ctl.alive || ctl.hangUp) return

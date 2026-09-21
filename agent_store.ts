@@ -58,6 +58,8 @@ export interface AgentConfig {
   kbEnabled: boolean
   /** 开启用户上传的技能。 */
   skillsEnabled: boolean
+  /** 在聊天页展示 AI 的思考与工具调用过程。 */
+  showSteps: boolean
   // —— 角色形象 ——
   agentName: string
   agentEmoji: string
@@ -66,9 +68,31 @@ export interface AgentConfig {
   avatarPath?: string
 }
 
+/** AI 调用一次工具的完整记录（聊天页用它回放 AI 的决策过程）。 */
+export interface ToolStep {
+  /** 工具类别：本地快捷指令 / MCP / 本地知识库 / 技能；other = 模型点了一个不存在的工具。 */
+  kind: "shortcut" | "mcp" | "kb" | "skill" | "other"
+  /** 模型看到的函数名。 */
+  name: string
+  /** 展示用目标：快捷指令名 / 「服务器 · 工具」/ 本地知识库 / 技能名。 */
+  target: string
+  /** 调用参数（JSON 文本或查询词），过长会截断。 */
+  args: string
+  /** 返回结果，过长会截断。 */
+  result: string
+  /** 是否成功。 */
+  ok: boolean
+  /** 耗时（毫秒）。 */
+  ms: number
+}
+
 export interface ChatMessage {
   role: "user" | "assistant"
   content: string
+  /** 模型的推理过程（DeepSeek 思考模式返回的 reasoning_content）。 */
+  reasoning?: string
+  /** 这一轮里 AI 调用过的工具，按时间顺序。 */
+  steps?: ToolStep[]
 }
 
 /** 一个会话（一段独立的对话，各自带历史）。 */
@@ -93,12 +117,16 @@ const LEGACY_HISTORY_FILE = AGENT_DIR + "/history.json"
 
 export const NEW_SESSION_TITLE = "新对话"
 
+/** 默认的角色设定（系统提示词）。 */
+export const DEFAULT_SYSTEM_PROMPT =
+  "你是一个运行在用户手机上的智能体助手，可以调用用户的快捷指令和 MCP 工具来帮他完成任务。工具返回的结果就是事实，不要编造执行结果。回答请简洁、友好，使用中文。"
+
 export const DEFAULT_CONFIG: AgentConfig = {
   apiKey: "",
   baseUrl: "https://api.deepseek.com",
   apiPath: "/chat/completions",
   model: "deepseek-flash",
-  systemPrompt: "你是一个运行在用户手机上的智能体助手，可以调用用户的快捷指令和 MCP 工具来帮他完成任务。工具返回的结果就是事实，不要编造执行结果。回答请简洁、友好，使用中文。",
+  systemPrompt: DEFAULT_SYSTEM_PROMPT,
   maxHistory: 50,
   speakReply: true,
   maxToolRounds: 3,
@@ -108,6 +136,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   mcpServers: [],
   kbEnabled: true,
   skillsEnabled: true,
+  showSteps: true,
   agentName: "小助",
   agentEmoji: "✨",
   greetText: "说点什么，或者点下面的麦克风直接听写",
@@ -186,7 +215,7 @@ export const CONFIG_KEYS: string[] = [
   "apiKey", "baseUrl", "apiPath", "model", "systemPrompt",
   "maxHistory", "speakReply", "maxToolRounds", "thinkingEnabled",
   "reasoningEffort", "tools", "mcpServers", "kbEnabled", "skillsEnabled",
-  "agentName", "agentEmoji", "greetText", "avatarPath",
+  "showSteps", "agentName", "agentEmoji", "greetText", "avatarPath",
 ]
 
 /**

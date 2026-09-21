@@ -1,6 +1,6 @@
 import { fetch } from "scripting"
 import {
-  AgentConfig, AgentTool, ChatMessage, McpServer, toolDescription, toolParameters,
+  AgentConfig, AgentTool, ChatMessage, McpServer, ToolStep, toolDescription, toolParameters,
 } from "./agent_store"
 import { McpTool, callMcpTool, collectMcpTools } from "./mcp_client"
 import { formatKbHits, kbStats, searchKb } from "./kb_store"
@@ -91,6 +91,69 @@ export type AgentEvent = {
   /** 执行目标：快捷指令名，或「服务器 · 工具」。 */
   target: string
   argsText: string
+}
+
+/** 工具类别在界面上的统一叫法（聊天页过程面板、设置页说明共用一处）。 */
+export const TOOL_KIND_LABEL: Record<ToolStep["kind"], string> = {
+  shortcut: "本地快捷指令工具",
+  mcp: "MCP 工具",
+  kb: "本地知识库",
+  skill: "技能",
+  other: "未知工具",
+}
+
+export function toolKindLabel(kind: ToolStep["kind"]): string {
+  return TOOL_KIND_LABEL[kind] ?? "工具"
+}
+
+/** runAgent 的回调钩子；聊天页用它把 AI 的过程实时画出来。 */
+export type RunAgentHooks = {
+  /** 即将调用某个工具（灵动岛 / 语音页拿它写进度文案）。 */
+  onEvent?: (e: AgentEvent) => void
+  /** 一次工具调用结束，带完整记录（参数 / 结果 / 成败 / 耗时）。 */
+  onStep?: (s: ToolStep) => void
+  /** 模型吐出的推理过程（思考模式下每轮都可能有一段）。 */
+  onReasoning?: (text: string) => void
+}
+
+/** 兼容旧写法：第 4 个参数也可以直接传一个 onEvent 回调。 */
+export type HooksArg = RunAgentHooks | ((e: AgentEvent) => void) | undefined
+
+function normalizeHooks(arg: HooksArg): RunAgentHooks {
+  if (!arg) return {}
+  if (typeof arg === "function") return { onEvent: arg }
+  return arg
+}
+
+/** 存进历史前先截断，免得 sessions.json 被推理文本和长文档撑爆。 */
+const ARGS_CLIP = 300
+const RESULT_CLIP = 800
+const REASONING_CLIP = 1600
+
+function clip(text: string, max: number): string {
+  const s = text ?? ""
+  if (s.length <= max) return s
+  return s.slice(0, max) + `…（已截断，共 ${s.length} 字）`
+}
+
+function makeStep(
+  kind: ToolStep["kind"],
+  name: string,
+  target: string,
+  argsText: string,
+  rawResult: string,
+  ok: boolean,
+  ms: number,
+): ToolStep {
+  return {
+    kind,
+    name,
+    target,
+    args: clip(argsText, ARGS_CLIP),
+    result: clip(rawResult, RESULT_CLIP),
+    ok,
+    ms,
+  }
 }
 
 /** 模型看到的函数名 → 实际执行目标。 */
@@ -236,12 +299,13 @@ export function buildShortcutURL(tool: AgentTool, inputText?: string): string {
 async function executeTool(
   toolCall: any,
   routes: Map<string, ToolRoute>,
-  onEvent?: (e: AgentEvent) => void,
-): Promise<string> {
-  const name = toolCall?.function?.name as string
+  hooks: RunAgentHooks,
+): Promise<{ text: string; step: ToolStep }> {
+  const name = String(toolCall?.function?.name ?? "")
   const route = routes.get(name)
   if (!route) {
-    return `未找到名为「${name}」的工具`
+    const text = `未找到名为「${name}」的工具`
+    return { text, step: makeStep("other", name, name, "", text, false, 0) }
   }
 
   let args: any = {}
@@ -255,15 +319,14 @@ async function executeTool(
 
   // —— MCP 工具：真的有返回值，直接原样交给模型 ——
   if (route.kind === "mcp") {
-    onEvent?.({
-      type: "tool",
-      kind: "mcp",
-      name,
-      target: `${route.server.name || route.server.id} · ${route.tool.name}`,
-      argsText: keys.length > 0 ? JSON.stringify(args) : "",
-    })
+    const target = `${route.server.name || route.server.id} · ${route.tool.name}`
+    const argsText = keys.length > 0 ? JSON.stringify(args) : ""
+    hooks.onEvent?.({ type: "tool", kind: "mcp", name, target, argsText })
+    const t0 = Date.now()
     const res = await callMcpTool(route.server, route.tool.name, args)
-    return res.text
+    const step = makeStep("mcp", name, target, argsText, res.text, res.ok, Date.now() - t0)
+    hooks.onStep?.(step)
+    return { text: res.text, step }
   }
 
   // —— 本地知识库检索：真结果 ——
@@ -271,61 +334,91 @@ async function executeTool(
     const query = String(args.query ?? "").trim()
     const rawTop = Number(args.topK)
     const topK = rawTop > 0 ? Math.min(10, Math.floor(rawTop)) : 5
-    onEvent?.({ type: "tool", kind: "kb", name, target: "本地知识库", argsText: query })
-    if (!query) return "没有给出检索关键词。"
-    return formatKbHits(query, searchKb(query, topK))
+    hooks.onEvent?.({ type: "tool", kind: "kb", name, target: "本地知识库", argsText: query })
+    const t0 = Date.now()
+    const text = query ? formatKbHits(query, searchKb(query, topK)) : "没有给出检索关键词。"
+    const step = makeStep("kb", name, "本地知识库", query, text, !!query, Date.now() - t0)
+    hooks.onStep?.(step)
+    return { text, step }
   }
 
   // —— 技能：读全文 ——
   if (route.kind === "skill") {
     const key = String(args.name ?? args.skill ?? "").trim()
-    onEvent?.({ type: "tool", kind: "skill", name, target: key || "技能", argsText: key })
+    const target = key || "技能"
+    hooks.onEvent?.({ type: "tool", kind: "skill", name, target, argsText: key })
+    const t0 = Date.now()
     const hit = readSkill(key)
+    let text: string
     if (!hit) {
       const names = listSkills()
         .filter((s) => s.enabled)
         .map((s) => s.name)
-      return `没有找到名为「${key}」的技能。可用技能：${names.join("、") || "（无）"}`
+      text = `没有找到名为「${key}」的技能。可用技能：${names.join("、") || "（无）"}`
+    } else {
+      const files = hit.files.filter((f) => f.toLowerCase() !== "skill.md")
+      const parts = [`技能「${hit.meta.name}」的完整说明：`, hit.content]
+      if (files.length > 0) parts.push(`\n该技能目录里的附件：${files.join("、")}`)
+      text = parts.join("\n")
     }
-    const files = hit.files.filter((f) => f.toLowerCase() !== "skill.md")
-    const parts = [`技能「${hit.meta.name}」的完整说明：`, hit.content]
-    if (files.length > 0) parts.push(`\n该技能目录里的附件：${files.join("、")}`)
-    return parts.join("\n")
+    const step = makeStep("skill", name, target, key, text, !!hit, Date.now() - t0)
+    hooks.onStep?.(step)
+    return { text, step }
   }
 
   // —— 快捷指令工具：单向触发，拿不到结果 ——
   const tool = route.tool
   const inputText = keys.length > 0 ? JSON.stringify(args) : ""
-  onEvent?.({ type: "tool", kind: "shortcut", name, target: tool.shortcutName, argsText: inputText })
+  hooks.onEvent?.({ type: "tool", kind: "shortcut", name, target: tool.shortcutName, argsText: inputText })
 
+  const t0 = Date.now()
   const ok = await Safari.openURL(buildShortcutURL(tool, inputText))
+  let text: string
   if (!ok) {
-    return `执行快捷指令「${tool.shortcutName}」失败（无法打开，可能快捷指令名不存在）`
+    text = `执行快捷指令「${tool.shortcutName}」失败（无法打开，可能快捷指令名不存在）`
+  } else {
+    // 快捷指令是单向触发：这里必须明确告诉模型「拿不到结果」，
+    // 否则它会顺着上下文编造一个执行结果。
+    const tail = "。注意：这是单向触发，没有返回值，不要编造执行结果；只能说明已执行，或让用户自己看手机确认。"
+    text = keys.length > 0
+      ? `已触发快捷指令「${tool.shortcutName}」，传入参数：${inputText}` + tail
+      : `已触发快捷指令「${tool.shortcutName}」（无参数）` + tail
   }
-  // 快捷指令是单向触发：这里必须明确告诉模型「拿不到结果」，
-  // 否则它会顺着上下文编造一个执行结果。
-  const tail = "。注意：这是单向触发，没有返回值，不要编造执行结果；只能说明已执行，或让用户自己看手机确认。"
-  return keys.length > 0
-    ? `已触发快捷指令「${tool.shortcutName}」，传入参数：${inputText}` + tail
-    : `已触发快捷指令「${tool.shortcutName}」（无参数）` + tail
+  const step = makeStep("shortcut", name, tool.shortcutName, inputText, text, ok, Date.now() - t0)
+  hooks.onStep?.(step)
+  return { text, step }
 }
 
 export async function runAgent(
   userText: string,
   cfg: AgentConfig,
   history: ChatMessage[],
-  onEvent?: (e: AgentEvent) => void,
-): Promise<{ reply: string; newHistory: ChatMessage[] }> {
+  hooksArg?: HooksArg,
+): Promise<{ reply: string; newHistory: ChatMessage[]; steps: ToolStep[]; reasoning: string }> {
+  const hooks = normalizeHooks(hooksArg)
   const messages = buildMessages(cfg, history, userText)
   const maxRounds = Math.max(1, cfg.maxToolRounds || 3)
   // 工具清单在每轮对话开始时取一次（MCP 那边有 5 分钟缓存）。
   const { specs, routes } = await buildToolSpecs(cfg)
+  const steps: ToolStep[] = []
+  const reasonings: string[] = []
   let reply = ""
   let resolved = false
+
+  // DeepSeek 思考模式把推理放在 reasoning_content（有的兼容实现叫 reasoning）。
+  const noteReasoning = (msg: any) => {
+    const chunk = msg?.reasoning_content ?? msg?.reasoning
+    if (typeof chunk === "string" && chunk.trim()) {
+      const t = chunk.trim()
+      reasonings.push(t)
+      hooks.onReasoning?.(t)
+    }
+  }
 
   for (let i = 0; i < maxRounds; i++) {
     const data = await callDeepSeek(messages, cfg, specs)
     const msg = data?.choices?.[0]?.message ?? {}
+    noteReasoning(msg)
     const toolCalls: any[] = msg.tool_calls ?? []
 
     if (toolCalls.length === 0) {
@@ -340,23 +433,31 @@ export async function runAgent(
       tool_calls: toolCalls,
     })
     for (const tc of toolCalls) {
-      const result = await executeTool(tc, routes, onEvent)
-      messages.push({ role: "tool", tool_call_id: tc.id, content: result })
+      const { text, step } = await executeTool(tc, routes, hooks)
+      steps.push(step)
+      messages.push({ role: "tool", tool_call_id: tc.id, content: text })
     }
   }
 
   if (!resolved) {
     const data = await callDeepSeek(messages, cfg, null)
-    reply = data?.choices?.[0]?.message?.content ?? ""
+    const msg = data?.choices?.[0]?.message ?? {}
+    noteReasoning(msg)
+    reply = msg.content ?? ""
   }
+
+  const reasoning = clip(reasonings.join("\n\n"), REASONING_CLIP)
+  const assistant: ChatMessage = { role: "assistant", content: reply }
+  if (reasoning) assistant.reasoning = reasoning
+  if (steps.length > 0) assistant.steps = steps
 
   const newHistory: ChatMessage[] = [
     ...history,
     { role: "user", content: userText },
-    { role: "assistant", content: reply },
+    assistant,
   ]
 
-  return { reply, newHistory }
+  return { reply, newHistory, steps, reasoning }
 }
 
 export async function dictate(): Promise<string> {
