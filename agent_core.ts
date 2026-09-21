@@ -7,6 +7,7 @@ import { formatKbHits, kbStats, searchKbHybrid } from "./kb_store"
 import { embedQueryVector, kbSemanticReady } from "./kb_embed"
 import { listSkills, readSkill, skillsPrompt } from "./skills_store"
 import { addPending } from "./tool_callback"
+import { CapResult, Capability, capabilitiesFor } from "./capabilities"
 
 type LLMMessage = {
   role: string
@@ -248,8 +249,8 @@ function buildMessages(
 /** 工具调用时抛给 UI 的事件（用于在灵动岛 / 语音页显示进度）。 */
 export type AgentEvent = {
   type: "tool"
-  /** 快捷指令工具、MCP 工具，还是内置的知识库 / 技能工具。 */
-  kind: "shortcut" | "mcp" | "kb" | "skill"
+  /** 工具类别：快捷指令 / MCP / 知识库 / 技能 / 助手自带的手脚（文件、命令行）。 */
+  kind: ToolStep["kind"]
   /** 模型看到的函数名。 */
   name: string
   /** 执行目标：快捷指令名，或「服务器 · 工具」。 */
@@ -263,6 +264,8 @@ export const TOOL_KIND_LABEL: Record<ToolStep["kind"], string> = {
   mcp: "MCP 工具",
   kb: "本地知识库",
   skill: "技能",
+  fs: "文件",
+  cli: "命令行",
   other: "未知工具",
 }
 
@@ -280,6 +283,11 @@ export type RunAgentHooks = {
   onReasoning?: (text: string) => void
   /** 流式增量：正文与推理边生成边回调（打字机效果）。 */
   onDelta?: (d: AgentDelta) => void
+  /**
+   * 助手刚给自己登记了新工具（快捷指令工具）。
+   * 会话挂载会把这些名字之外的快捷指令工具过滤掉，所以聊天页收到后要把它们并进当前会话。
+   */
+  onToolsCreated?: (names: string[]) => void
 }
 
 /** 兼容旧写法：第 4 个参数也可以直接传一个 onEvent 回调。 */
@@ -328,6 +336,8 @@ type ToolRoute =
   | { kind: "mcp"; server: McpServer; tool: McpTool }
   | { kind: "kb" }
   | { kind: "skill" }
+  /** 助手自带的能力（文件 / 命令行 / 技能脚本 / 建技能 / 建工具）。 */
+  | { kind: "builtin"; cap: Capability }
 
 const FUNC_NAME_BAD = /[^A-Za-z0-9_-]/g
 
@@ -342,11 +352,13 @@ export function mcpFunctionName(server: McpServer, toolName: string): string {
 }
 
 /**
- * 合并四路工具，生成发给模型的 tools 数组，并记下函数名到执行目标的映射：
+ * 合并各路工具，生成发给模型的 tools 数组，并记下函数名到执行目标的映射：
  *   - 快捷指令工具（单向触发；配了回传才有结果）
  *   - MCP 工具（远程 HTTP，有真返回值）
  *   - 内置的本地知识库检索（离线全文检索，有真返回值）
  *   - 内置的技能读取（渐进式披露，有真返回值）
+ *   - 助手自带的能力（文件读写 / 命令行 / 技能脚本 / 建技能 / 建快捷指令工具），
+ *     在设置页「能力」里逐个授权后才会出现
  * 连不上的 MCP 服务器只跳过它的工具，不会打断本轮对话。
  */
 async function buildToolSpecs(
@@ -448,6 +460,23 @@ async function buildToolSpecs(
     })
   }
 
+  // —— 助手自带的能力（文件 / 命令行 / 技能脚本 / 建技能 / 建工具）——
+  // 在设置页「能力」里逐个授权后才会挂出来，默认一个都没有。
+  let caps: Capability[] = []
+  try {
+    caps = capabilitiesFor(cfg)
+  } catch {
+    caps = []
+  }
+  for (const cap of caps) {
+    const name = take(cap.name)
+    routes.set(name, { kind: "builtin", cap })
+    specs.push({
+      type: "function",
+      function: { name, description: cap.description, parameters: cap.parameters },
+    })
+  }
+
   return { specs, routes }
 }
 
@@ -485,6 +514,33 @@ async function executeTool(
   }
   if (args == null || typeof args !== "object" || Array.isArray(args)) args = {}
   const keys = Object.keys(args)
+
+  // —— 助手自带的能力：文件 / 命令行 / 技能脚本 / 建技能 / 建工具 ——
+  if (route.kind === "builtin") {
+    const cap = route.cap
+    const argsText = keys.length > 0 ? JSON.stringify(args) : ""
+    hooks.onEvent?.({ type: "tool", kind: cap.kind, name, target: cap.label, argsText })
+    const t0 = Date.now()
+    let res: CapResult
+    try {
+      res = await cap.run(args)
+    } catch (e: any) {
+      res = { ok: false, text: `执行失败：${e?.message ?? String(e)}` }
+    }
+    const step = makeStep(
+      cap.kind,
+      name,
+      res.target || cap.label,
+      res.argsText ?? argsText,
+      res.text,
+      res.ok,
+      Date.now() - t0,
+    )
+    if (res.files && res.files.length > 0) step.files = res.files
+    hooks.onStep?.(step)
+    if (res.createdTools && res.createdTools.length > 0) hooks.onToolsCreated?.(res.createdTools)
+    return { text: res.text, step }
+  }
 
   // —— MCP 工具：真的有返回值，直接原样交给模型 ——
   if (route.kind === "mcp") {

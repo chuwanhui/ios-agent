@@ -268,6 +268,18 @@ export interface AgentConfig {
   embedModel: string
   /** 在聊天页展示 AI 的思考与工具调用过程。 */
   showSteps: boolean
+  // —— 助手能力（「手脚」）——
+  // 全部默认关闭，在设置页的「能力」里逐个授权；关掉时对应的工具根本不会挂给模型。
+  /** 读写文件：列目录 / 读 / 写 / 删（工作区在「文件」App → Scripting 里可见）。 */
+  fsEnabled: boolean
+  /** 执行命令行（本机精简命令：Python / scripting-ts / curl / ffmpeg 等）。 */
+  cliEnabled: boolean
+  /** 运行技能自带的脚本（.py / .ts）。 */
+  skillScriptEnabled: boolean
+  /** 让助手自己创建 / 注册新技能。 */
+  skillCreateEnabled: boolean
+  /** 让助手自己登记快捷指令工具（写完配置后由它引导用户去『快捷指令』App 建）。 */
+  toolCreateEnabled: boolean
   // —— 角色形象 ——
   agentName: string
   /** 用户上传的头像图片路径（图片存在 appGroup，这里只存路径）；为空就显示占位图。 */
@@ -284,10 +296,21 @@ export interface AgentConfig {
   onlySkillIds?: string[]
 }
 
+/** 「能力」开关的字段名（capabilities.ts 用它声明每个工具归哪个开关管）。 */
+export type AgentConfigToggle =
+  | "fsEnabled"
+  | "cliEnabled"
+  | "skillScriptEnabled"
+  | "skillCreateEnabled"
+  | "toolCreateEnabled"
+
 /** AI 调用一次工具的完整记录（聊天页用它回放 AI 的决策过程）。 */
 export interface ToolStep {
-  /** 工具类别：本地快捷指令 / MCP / 本地知识库 / 技能；other = 模型点了一个不存在的工具。 */
-  kind: "shortcut" | "mcp" | "kb" | "skill" | "other"
+  /**
+   * 工具类别：本地快捷指令 / MCP / 本地知识库 / 技能 / 助手自带的手脚（文件、命令行）；
+   * other = 模型点了一个不存在的工具。
+   */
+  kind: "shortcut" | "mcp" | "kb" | "skill" | "fs" | "cli" | "other"
   /** 模型看到的函数名。 */
   name: string
   /** 展示用目标：快捷指令名 / 「服务器 · 工具」/ 本地知识库 / 技能名。 */
@@ -307,6 +330,11 @@ export interface ToolStep {
   cid?: string
   /** 是否已经收到快捷指令的回传（此时 result 是回传内容，不再是「等待回传」）。 */
   callback?: boolean
+  /**
+   * 这次调用产出 / 改动的文件（绝对路径）。聊天页会给它们画「产出文件」卡片，
+   * 点一下就能用系统菜单存到「文件」App 或分享出去。
+   */
+  files?: string[]
 }
 
 export interface ChatMessage {
@@ -382,8 +410,10 @@ export const NEW_SESSION_TITLE = "新对话"
 
 /** 默认的角色设定（系统提示词）。 */
 export const DEFAULT_SYSTEM_PROMPT =
-  "你是一个运行在用户手机上的智能体助手，可以调用用户的快捷指令、MCP 工具和本地知识库来帮他完成任务。" +
-  "工具返回的结果就是事实，不要编造。回答用中文，简洁一点，可以用 Markdown 排版。"
+  "你是一个运行在用户手机上的智能体助手：可以调用用户的快捷指令、MCP 工具、本地知识库和技能来帮他完成任务，" +
+  "也能读写他手机上的文件、跑本机命令行、把结果落成文件交给他保存。" +
+  "工具返回的结果就是事实，不要编造。能用工具真正做完的事就直接做完（写文件、跑脚本、建技能），不要只在回答里描述步骤。" +
+  "回答用中文，简洁一点，可以用 Markdown 排版；报告 / 代码 / 表格这种长内容写成文件交给用户，而不是塞进回复。"
 
 export const DEFAULT_CONFIG: AgentConfig = {
   apiKey: "",
@@ -407,6 +437,12 @@ export const DEFAULT_CONFIG: AgentConfig = {
   showSteps: true,
   agentName: "小助",
   gitToken: "",
+  // 能力默认全关：装了什么工具就有什么权限，让用户自己决定什么时候给。
+  fsEnabled: false,
+  cliEnabled: false,
+  skillScriptEnabled: false,
+  skillCreateEnabled: false,
+  toolCreateEnabled: false,
 }
 
 // ———————————————————————— 工具参数 ————————————————————————
@@ -592,18 +628,23 @@ export function mountsFromConfig(cfg: AgentConfig, enabledSkillIds: string[]): S
 // ———————————————————————— 配置 ————————————————————————
 
 /**
- * 上一版的默认系统提示词：老配置里存的还是它，
- * 加载时静默换成新的（用户自己改过的提示词不动）。
+ * 历史版的默认系统提示词：老配置里存的还是它们，加载时静默换成新的
+ * （用户自己改过的提示词不动）。
  */
-const LEGACY_DEFAULT_SYSTEM_PROMPT =
-  "你是一个运行在用户手机上的智能体助手，可以调用用户的快捷指令和 MCP 工具来帮他完成任务。工具返回的结果就是事实，不要编造执行结果。回答请简洁、友好，使用中文。"
+const LEGACY_DEFAULT_SYSTEM_PROMPTS = [
+  "你是一个运行在用户手机上的智能体助手，可以调用用户的快捷指令和 MCP 工具来帮他完成任务。工具返回的结果就是事实，不要编造执行结果。回答请简洁、友好，使用中文。",
+  "你是一个运行在用户手机上的智能体助手，可以调用用户的快捷指令、MCP 工具和本地知识库来帮他完成任务。工具返回的结果就是事实，不要编造。回答用中文，简洁一点，可以用 Markdown 排版。",
+]
 
 export function loadConfig(): AgentConfig {
   try {
     const raw = FileManager.readAsStringSync(CONFIG_FILE)
     const parsed = JSON.parse(raw)
     const merged = { ...DEFAULT_CONFIG, ...parsed }
-    if (!merged.systemPrompt || merged.systemPrompt.trim() === LEGACY_DEFAULT_SYSTEM_PROMPT) {
+    if (
+      !merged.systemPrompt ||
+      LEGACY_DEFAULT_SYSTEM_PROMPTS.indexOf(merged.systemPrompt.trim()) >= 0
+    ) {
       merged.systemPrompt = DEFAULT_SYSTEM_PROMPT
     }
     return merged
@@ -631,8 +672,8 @@ export const CONFIG_KEYS: string[] = [
   "maxHistory", "maxToolRounds", "thinkingEnabled",
   "reasoningEffort", "tools", "mcpServers", "kbEnabled", "skillsEnabled",
   "embedEnabled", "embedBaseUrl", "embedPath", "embedApiKey", "embedModel",
-  "showSteps", "agentName", "avatarPath", "gitToken",
-  "modelOptions", "modelOptionsAt",
+  "showSteps", "agentName", "avatarPath", "gitToken", "modelOptions", "modelOptionsAt",
+  "fsEnabled", "cliEnabled", "skillScriptEnabled", "skillCreateEnabled", "toolCreateEnabled",
 ]
 
 /**

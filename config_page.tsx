@@ -42,7 +42,7 @@ function tierOf(cfg: AgentConfig): ThinkingTier {
   return effort === "low" || effort === "medium" ? effort : "high"
 }
 
-interface FormState {
+export interface FormState {
   // 角色
   agentName: string
   /** 头像图片路径；空 = 显示占位图。选择照片时先指向暂存文件，保存时才转正。 */
@@ -72,6 +72,12 @@ interface FormState {
   // 知识库 / 技能
   kbEnabled: boolean
   skillsEnabled: boolean
+  // 能力（助手自己动手的权限，默认全关）
+  fsEnabled: boolean
+  cliEnabled: boolean
+  skillScriptEnabled: boolean
+  skillCreateEnabled: boolean
+  toolCreateEnabled: boolean
   // 知识库语义检索（可选）
   embedEnabled: boolean
   embedBaseUrl: string
@@ -98,6 +104,11 @@ function toFormState(cfg: AgentConfig): FormState {
     mcpServers: (cfg.mcpServers ?? []).map((m) => ({ ...m })),
     kbEnabled: cfg.kbEnabled,
     skillsEnabled: cfg.skillsEnabled,
+    fsEnabled: cfg.fsEnabled === true,
+    cliEnabled: cfg.cliEnabled === true,
+    skillScriptEnabled: cfg.skillScriptEnabled === true,
+    skillCreateEnabled: cfg.skillCreateEnabled === true,
+    toolCreateEnabled: cfg.toolCreateEnabled === true,
     embedEnabled: cfg.embedEnabled === true,
     embedBaseUrl: cfg.embedBaseUrl ?? "",
     embedPath: cfg.embedPath ?? DEFAULT_EMBED_PATH,
@@ -139,6 +150,47 @@ interface Props {
 }
 
 /** 设置页：角色 / 模型 / 对话 / 工具。以 sheet 形式从聊天页打开。 */
+/**
+ * 「能力」开关组：助手自己动手的权限（默认全关，打开哪项才能做哪件事）。
+ * 单独抽出来是为了能单独预览 / 复用。
+ */
+export function AbilitySection({
+  state, patch,
+}: {
+  state: FormState
+  patch: (p: Partial<FormState>) => void
+}) {
+  return (
+    <>
+      <Toggle
+        title="读写文件"
+        value={state.fsEnabled}
+        onChanged={(v) => patch({ fsEnabled: v })}
+      />
+      <Toggle
+        title="执行命令行"
+        value={state.cliEnabled}
+        onChanged={(v) => patch({ cliEnabled: v })}
+      />
+      <Toggle
+        title="运行技能脚本"
+        value={state.skillScriptEnabled}
+        onChanged={(v) => patch({ skillScriptEnabled: v })}
+      />
+      <Toggle
+        title="创建技能"
+        value={state.skillCreateEnabled}
+        onChanged={(v) => patch({ skillCreateEnabled: v })}
+      />
+      <Toggle
+        title="配置快捷指令工具"
+        value={state.toolCreateEnabled}
+        onChanged={(v) => patch({ toolCreateEnabled: v })}
+      />
+    </>
+  )
+}
+
 export function ConfigPage({ onClose = () => {} }: Props) {
   const [state, setState] = useState<FormState>(() => toFormState(loadConfig()))
   /** 可用模型 = 上次从接口拉回来的那份（只能从这里选，不给手输）。空 = 还没拉过。 */
@@ -362,6 +414,11 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       mcpServers,
       kbEnabled: state.kbEnabled,
       skillsEnabled: state.skillsEnabled,
+      fsEnabled: state.fsEnabled,
+      cliEnabled: state.cliEnabled,
+      skillScriptEnabled: state.skillScriptEnabled,
+      skillCreateEnabled: state.skillCreateEnabled,
+      toolCreateEnabled: state.toolCreateEnabled,
       embedEnabled: state.embedEnabled,
       embedBaseUrl: state.embedBaseUrl.trim(),
       embedPath: state.embedPath.trim() || DEFAULT_EMBED_PATH,
@@ -573,6 +630,17 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             />
           </Section>
 
+          <Section
+            header={<Text>能力</Text>}
+            footer={
+              <Text>
+                助手自己动手的权限，默认全关；打开哪一项，它才能做哪件事，随时可以关掉。
+                文件类能力只在本 App 自己的目录里活动（工作区：文件 App → Scripting → 工作区）。
+              </Text>
+            }
+          >
+            <AbilitySection state={state} patch={patch} />
+          </Section>
 
           <Section title="知识库">
             <Toggle

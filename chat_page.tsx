@@ -159,6 +159,61 @@ export function MarkdownText({ text, cursor = false, font }: {
   return <Text attributedString={body} font={font} foregroundStyle="label" />
 }
 
+/** 取文件名（文件卡片标题用）。 */
+function baseName(path: string): string {
+  const i = path.lastIndexOf("/")
+  return i < 0 ? path : path.slice(i + 1)
+}
+
+/** 收集这一轮产出 / 改动的文件（去重，保持出现顺序）。 */
+export function collectFiles(steps: ToolStep[]): string[] {
+  const out: string[] = []
+  for (const s of steps ?? []) {
+    for (const f of s.files ?? []) {
+      if (f && out.indexOf(f) < 0) out.push(f)
+    }
+  }
+  return out
+}
+
+/** 弹出系统文件菜单：存储到「文件」/ 拷贝 / 打印 / 用别的 App 打开。 */
+async function openFileMenu(path: string) {
+  try {
+    await DocumentInteraction.optionsMenu(path)
+  } catch (e: any) {
+    Dialog.alert({ message: "打不开这个文件：" + (e?.message ?? String(e)) })
+  }
+}
+
+/** 助手产出的文件：点一下就能保存到「文件」App 或分享出去。 */
+export function FileList({ files }: { files: string[] }) {
+  if (!files || files.length === 0) return null
+  return (
+    <VStack spacing={6} alignment="leading" frame={{ maxWidth: "infinity", alignment: "leading" }}>
+      {files.map((path, i) => (
+        <HStack
+          key={"file" + i}
+          spacing={10}
+          padding={{ horizontal: 12, vertical: 9 }}
+          background={CARD_FILL}
+          clipShape={{ type: "rect", cornerRadius: 12 }}
+          frame={{ maxWidth: "infinity" }}
+          onTapGesture={() => openFileMenu(path)}
+        >
+          <Image systemName="doc.text" font="footnote" foregroundStyle="secondaryLabel" />
+          <VStack spacing={2} alignment="leading" frame={{ maxWidth: "infinity", alignment: "leading" }}>
+            <Text font="footnote" foregroundStyle="label" lineLimit={1}>{baseName(path)}</Text>
+            <Text font="caption2" foregroundStyle="tertiaryLabel" lineLimit={1}>
+              点一下：存储到「文件」/ 分享
+            </Text>
+          </VStack>
+          <Image systemName="square.and.arrow.up" font="footnote" foregroundStyle="secondaryLabel" />
+        </HStack>
+      ))}
+    </VStack>
+  )
+}
+
 /** 用户的输入：纯文本气泡。 */
 function Bubble({ message, avatar }: { message: ChatMessage; avatar: AvatarSpec }) {
   const isUser = message.role === "user"
@@ -196,6 +251,7 @@ export function AssistantMessage({
   const steps = message.steps ?? []
   const reasoning = message.reasoning ?? ""
   const hasProcess = steps.length > 0 || reasoning.length > 0
+  const files = collectFiles(steps)
   return (
     <HStack
       spacing={8}
@@ -225,6 +281,7 @@ export function AssistantMessage({
           </VStack>
           <Spacer />
         </HStack>
+        <FileList files={files} />
       </VStack>
       <Spacer />
     </HStack>
@@ -236,6 +293,7 @@ export function LiveThinking({
   avatar, reasoning, steps, showSteps, text,
 }: { avatar: AvatarSpec; reasoning: string; steps: ToolStep[]; showSteps: boolean; text: string }) {
   const hasProcess = steps.length > 0 || reasoning.length > 0
+  const files = collectFiles(steps)
   return (
     <HStack
       spacing={8}
@@ -265,6 +323,7 @@ export function LiveThinking({
           </VStack>
           <Spacer />
         </HStack>
+        <FileList files={files} />
       </VStack>
       <Spacer />
     </HStack>
@@ -393,6 +452,9 @@ export function ChatPage() {
 
     const base = current ?? makeSession()
     const isFirst = base.messages.length === 0
+    // 这个会话的挂载：助手中途给自己登记了新工具的话，要把新工具并进来，
+    // 否则会话挂载会把它过滤掉，下一轮它就看不见了。
+    let mountsNow = base.mounts
 
     setBusy(true)
     setInput("")
@@ -431,6 +493,19 @@ export function ChatPage() {
           setLiveText("")
         },
         onStep: (s) => setLiveSteps((prev) => [...prev, s]),
+        onToolsCreated: (names) => {
+          setCfg(loadConfig())
+          if (!mountsNow) return // 没单独挂载过 = 用设置里的全部工具，新工具自然可见
+          const set = new Set(mountsNow.tools)
+          let changed = false
+          for (const n of names) {
+            if (!set.has(n)) {
+              set.add(n)
+              changed = true
+            }
+          }
+          if (changed) mountsNow = { ...mountsNow, tools: Array.from(set) }
+        },
         onDelta: (d) => {
           if (d.reset) {
             pendingText = ""
@@ -454,6 +529,7 @@ export function ChatPage() {
       apply(
         upsertSession(store, {
           ...base,
+          mounts: mountsNow,
           messages: capped,
           updatedAt: Date.now(),
           title: isFirst ? deriveTitle(capped) : base.title,

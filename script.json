@@ -1,42 +1,42 @@
 {
-  "entry" : "index.tsx",
-  "iconImage" : "",
-  "version" : "1.0.0",
-  "remoteResource" : null,
+  "name" : "智能体",
+  "localizedNames" : {
+    "de" : "",
+    "ru" : "",
+    "es" : "",
+    "en" : "",
+    "pt" : "",
+    "it" : "",
+    "ja" : "",
+    "zh" : "",
+    "fr" : ""
+  },
+  "icon" : "sparkles",
+  "localizedDescriptions" : {
+    "zh" : "",
+    "en" : "",
+    "de" : "",
+    "pt" : "",
+    "es" : "",
+    "ru" : "",
+    "fr" : "",
+    "ja" : "",
+    "it" : ""
+  },
+  "description" : "聊天式手机智能体：DeepSeek 大模型 + 快捷指令 \/ MCP \/ 知识库工具调用",
+  "runInApp" : false,
   "intentInputTypes" : [
     "texts",
     "urls"
   ],
+  "author" : null,
+  "permissions" : null,
   "contributors" : [
 
   ],
-  "name" : "智能体",
-  "description" : "聊天式手机智能体：DeepSeek 大模型 + 快捷指令 / MCP / 知识库工具调用",
-  "icon" : "sparkles",
-  "localizedNames" : {
-    "zh" : "",
-    "de" : "",
-    "ru" : "",
-    "fr" : "",
-    "es" : "",
-    "ja" : "",
-    "en" : "",
-    "it" : "",
-    "pt" : ""
-  },
-  "runInApp" : false,
-  "author" : null,
-  "localizedDescriptions" : {
-    "zh" : "",
-    "de" : "",
-    "ru" : "",
-    "fr" : "",
-    "es" : "",
-    "ja" : "",
-    "en" : "",
-    "it" : "",
-    "pt" : ""
-  },
+  "remoteResource" : null,
   "color" : "#5856D6",
-  "permissions" : null
+  "entry" : "index.tsx",
+  "iconImage" : "",
+  "version" : "1.0.0"
 }
