@@ -236,6 +236,13 @@ export interface AgentConfig {
   baseUrl: string
   apiPath: string
   model: string
+  /**
+   * 上次从 `<接口地址>/models` 拉回来的可用模型。设置页只能从这里选，不给手输；
+   * 存进配置是为了重启后列表还在（不用每次重新拉）。
+   */
+  modelOptions?: string[]
+  /** 上次拉取模型列表的时间（毫秒）。 */
+  modelOptionsAt?: number
   systemPrompt: string
   maxHistory: number
   speakReply: boolean
@@ -606,7 +613,7 @@ function pickToolEntries(root: any): any[] | null {
 const FUNC_NAME_CHARS = /[^A-Za-z0-9_-]+/g
 
 /** 生成模型看到的函数名（只允许 [A-Za-z0-9_-]，去重，≤ 64 字符）。 */
-function makeToolName(
+export function makeToolFunctionName(
   rawName: string,
   shortcutName: string,
   index: number,
@@ -684,7 +691,7 @@ export function parseShortcutsJson(text: string): ToolParseResult {
     }
     seenShortcut.add(shortcutName)
 
-    const named = makeToolName(rawName || key, shortcutName, i, used)
+    const named = makeToolFunctionName(rawName || key, shortcutName, i, used)
     if (named.note) out.skipped.push(named.note)
     const tool: AgentTool = {
       name: named.name,
@@ -847,6 +854,7 @@ export const CONFIG_KEYS: string[] = [
   "reasoningEffort", "tools", "mcpServers", "kbEnabled", "skillsEnabled",
   "embedEnabled", "embedBaseUrl", "embedPath", "embedApiKey", "embedModel",
   "showSteps", "agentName", "agentEmoji", "greetText", "avatarPath", "gitToken",
+  "modelOptions", "modelOptionsAt",
 ]
 
 /**

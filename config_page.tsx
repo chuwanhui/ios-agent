@@ -3,7 +3,8 @@ import {
   Spacer, Text, TextField, Toggle, VStack, useState,
 } from "scripting"
 import {
-  AgentConfig, DEFAULT_SYSTEM_PROMPT, McpServer, loadConfig, makeMcpServer, saveConfig, validateConfig,
+  AgentConfig, DEFAULT_SYSTEM_PROMPT, McpServer, loadConfig, makeMcpServer, saveConfig,
+  validateConfig,
 } from "./agent_store"
 import { kbStats } from "./kb_store"
 import { DEFAULT_EMBED_PATH, embedReady, embedSettingsOf, embedTexts, QUERY_TIMEOUT_MS } from "./embed_client"
@@ -28,6 +29,13 @@ const TIERS: { key: ThinkingTier; label: string; desc: string; cost: string }[] 
   { key: "high", label: "深度", desc: "反复斟酌，多步任务更稳", cost: "最慢、最费 token" },
 ]
 
+/** 时间戳 → 「09-22 23:07」（显示模型列表上次拉取时间用）。 */
+function stamp(ms: number): string {
+  const d = new Date(ms)
+  const p = (n: number) => (n < 10 ? "0" + n : String(n))
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 /** 把配置里的 thinkingEnabled + reasoningEffort 反解成档位。 */
 function tierOf(cfg: AgentConfig): ThinkingTier {
   if (!cfg.thinkingEnabled) return "off"
@@ -47,6 +55,10 @@ interface FormState {
   baseUrl: string
   apiPath: string
   model: string
+  /** 上次从 /models 拉回来的可用模型；界面只能从这里选（不给手输）。 */
+  modelOptions: string[]
+  /** 上次拉取的时间（毫秒，0 = 从没拉过）。 */
+  modelOptionsAt: number
   // 对话
   /** 智能体设定：发给模型的系统提示词。 */
   systemPrompt: string
@@ -82,6 +94,8 @@ function toFormState(cfg: AgentConfig): FormState {
     baseUrl: cfg.baseUrl,
     apiPath: cfg.apiPath,
     model: cfg.model,
+    modelOptions: cfg.modelOptions ?? [],
+    modelOptionsAt: cfg.modelOptionsAt ?? 0,
     systemPrompt: cfg.systemPrompt,
     maxHistory: String(cfg.maxHistory),
     thinking: tierOf(cfg),
@@ -134,8 +148,10 @@ interface Props {
 /** 设置页：角色 / 模型 / 对话 / 工具。以 sheet 形式从聊天页打开。 */
 export function ConfigPage({ onClose = () => {} }: Props) {
   const [state, setState] = useState<FormState>(() => toFormState(loadConfig()))
-  /** 「拉取可用模型」拿到的模型名；空 = 还没拉过（那就不显示下拉）。 */
-  const [models, setModels] = useState<string[]>([])
+  /** 可用模型 = 上次从接口拉回来的那份（只能从这里选，不给手输）。空 = 还没拉过。 */
+  const models = state.modelOptions
+  /** 配置里存的模型是否在拉回来的列表里。 */
+  const modelInList = models.indexOf(state.model.trim()) >= 0
   const [fetchingModels, setFetchingModels] = useState(false)
   /** 知识库 / 技能子页改完数据回来后，用它强制本页重算统计数字。 */
   const [, setTick] = useState(0)
@@ -262,7 +278,9 @@ export function ConfigPage({ onClose = () => {} }: Props) {
         const text = await resp.text()
         Dialog.alert({
           title: `拉取失败（${resp.status}）`,
-          message: text.slice(0, 400) || "服务端没返回可用模型列表，手动填「模型」就行。",
+          message:
+            text.slice(0, 400) ||
+            "服务端没返回可用模型列表。核一下接口地址、Key 和网络，再点一次「拉取可用模型」。",
         })
         return
       }
@@ -283,12 +301,16 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       if (list.length === 0) {
         Dialog.alert({
           title: "没拿到模型",
-          message: "接口返回里没有模型列表，手动填「模型」就行。",
+          message:
+            "接口返回里没有模型列表。这条路要求接口是 OpenAI 兼容的（支持 GET /models + Bearer Key），换一个能列出模型的接口地址再拉。",
         })
         return
       }
-      setModels(list)
-      if (list.indexOf(state.model) < 0) patch({ model: list[0] })
+      patch({
+        modelOptions: list,
+        modelOptionsAt: Date.now(),
+        model: list.indexOf(state.model.trim()) < 0 ? list[0] : state.model,
+      })
     } catch (e: any) {
       Dialog.alert({ title: "拉取失败", message: e?.message ?? String(e) })
     } finally {
@@ -297,6 +319,22 @@ export function ConfigPage({ onClose = () => {} }: Props) {
   }
 
   function save() {
+    // 模型只能从拉回来的列表里选：没拉过 / 存的模型已不在列表，都不让保存
+    if (models.length === 0) {
+      Dialog.alert({
+        title: "还没拉取模型",
+        message:
+          "填好上面的「接口地址」和「API Key」，到「模型」那一点「拉取可用模型」——脚本会请求一次 /models，把服务端真正支持的模型列出来，再从列表里选一个。",
+      })
+      return
+    }
+    if (!modelInList) {
+      Dialog.alert({
+        title: "模型要重新选",
+        message: `配置里存的「${state.model.trim() || "（空）"}」不在拉回来的列表里（可能换过服务商或接口变了）。重新拉一次，再从列表里选一个。`,
+      })
+      return
+    }
     // 工具：草稿行 → AgentTool（顺带补回以前会被丢掉的「参数」）
     const built = toAgentTools(state.tools)
     if (built.error) {
@@ -338,6 +376,8 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       baseUrl: state.baseUrl.trim(),
       apiPath: state.apiPath.trim(),
       model: state.model.trim(),
+      modelOptions: models.length > 0 ? models : undefined,
+      modelOptionsAt: state.modelOptionsAt || undefined,
       systemPrompt: state.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT,
       maxHistory: Math.max(1, parseInt(state.maxHistory, 10) || 50),
       thinkingEnabled: state.thinking !== "off",
@@ -461,16 +501,21 @@ export function ConfigPage({ onClose = () => {} }: Props) {
           <Section
             header={<Text>模型</Text>}
             footer={
-              <Text>
-                点「拉取可用模型」会用上面的地址和 Key 请求一次 /models，把服务端支持的模型列出来；列不出来就手动填。
-              </Text>
+              <VStack alignment="leading" spacing={4}>
+                <Text>
+                  模型不给手输：点下面的按钮，脚本拿上面的「接口地址」拼上 /models、带上你的 Key 请求一次，把服务端真正支持的模型拉回来，再从列表里选一个。
+                </Text>
+                <Text>
+                  这份列表跟着设置一起保存，下次打开还在；换了服务商或想刷新，再拉一次就行。
+                </Text>
+              </VStack>
             }
           >
             {models.length > 0 ? (
               <Picker
                 title="模型"
                 pickerStyle="menu"
-                value={state.model}
+                value={modelInList ? state.model : ""}
                 onChanged={(v: string) => patch({ model: v })}
               >
                 {models.map((m) => (
@@ -479,24 +524,23 @@ export function ConfigPage({ onClose = () => {} }: Props) {
                   </Text>
                 ))}
               </Picker>
-            ) : null}
-            <TextField
-              title={models.length > 0 ? "模型（手动填写）" : "模型"}
-              value={state.model}
-              prompt="deepseek-flash"
-              autocorrectionDisabled
-              textInputAutocapitalization="never"
-              onChanged={(v) => patch({ model: v })}
-            />
+            ) : (
+              <Text foregroundStyle="secondaryLabel">还没拉到模型，先点下面的按钮拉一次。</Text>
+            )}
             <Button
-              title={fetchingModels ? "正在拉取…" : "拉取可用模型"}
+              title={fetchingModels ? "正在拉取…" : models.length > 0 ? "重新拉取" : "拉取可用模型"}
               systemImage="arrow.down.circle"
               disabled={fetchingModels}
               action={fetchModels}
             />
             {models.length > 0 ? (
               <Text font="footnote" foregroundStyle="secondaryLabel">
-                {`已拿到 ${models.length} 个模型`}
+                {`已拿到 ${models.length} 个模型${state.modelOptionsAt > 0 ? " · " + stamp(state.modelOptionsAt) : ""}`}
+              </Text>
+            ) : null}
+            {models.length > 0 && !modelInList ? (
+              <Text font="footnote" foregroundStyle="secondaryLabel">
+                {`⚠️ 配置里存的「${state.model.trim() || "（空）"}」不在这个列表里（可能换过服务商）：重新选一个再保存。`}
               </Text>
             ) : null}
           </Section>
@@ -605,7 +649,10 @@ export function ConfigPage({ onClose = () => {} }: Props) {
               title="本地快捷指令工具"
               detail={toolDetail}
               destination={
-                <ToolsPage rows={state.tools} onChange={(rows) => patch({ tools: rows })} />
+                <ToolsPage
+                  rows={state.tools}
+                  onChange={(rows) => patch({ tools: rows })}
+                />
               }
             />
             <NavRow
