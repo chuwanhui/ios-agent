@@ -243,6 +243,14 @@ export interface AgentConfig {
   modelOptions?: string[]
   /** 上次拉取模型列表的时间（毫秒）。 */
   modelOptionsAt?: number
+  /**
+   * 上次查到的余额：结论行 / 明细 / 来源端点 / 时间。
+   * 跟配置一起存，下次打开设置页不用再查就能看见上次的结果。
+   */
+  balanceText?: string
+  balanceDetail?: string
+  balanceSource?: string
+  balanceAt?: number
   systemPrompt: string
   maxHistory: number
   maxToolRounds: number
@@ -673,6 +681,7 @@ export const CONFIG_KEYS: string[] = [
   "reasoningEffort", "tools", "mcpServers", "kbEnabled", "skillsEnabled",
   "embedEnabled", "embedBaseUrl", "embedPath", "embedApiKey", "embedModel",
   "showSteps", "agentName", "avatarPath", "gitToken", "modelOptions", "modelOptionsAt",
+  "balanceText", "balanceDetail", "balanceSource", "balanceAt",
   "fsEnabled", "cliEnabled", "skillScriptEnabled", "skillCreateEnabled", "toolCreateEnabled",
 ]
 

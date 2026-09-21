@@ -1,6 +1,6 @@
 import {
   Button, fetch, Form, HStack, Image, NavigationLink, NavigationStack, Picker, Section, SecureField,
-  Spacer, Text, TextField, Toggle, VStack, useState,
+  Spacer, Text, TextField, Toggle, VStack, useEffect, useState,
 } from "scripting"
 import {
   AgentConfig, DEFAULT_SYSTEM_PROMPT, McpServer, loadConfig, makeMcpServer, saveConfig,
@@ -8,6 +8,7 @@ import {
 } from "./agent_store"
 import { kbStats } from "./kb_store"
 import { DEFAULT_EMBED_PATH, embedReady, embedSettingsOf, embedTexts, QUERY_TIMEOUT_MS } from "./embed_client"
+import { queryBalance } from "./balance_client"
 import { skillCounts } from "./skills_store"
 import { KbPage } from "./kb_page"
 import { SkillsPage } from "./skills_page"
@@ -35,6 +36,11 @@ function stamp(ms: number): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+/** 把可能多行的错误正文压成一行（自动拉取的状态行放不下换行）。 */
+function oneLine(s: string): string {
+  return (s || "").replace(/\s+/g, " ").trim()
+}
+
 /** 把配置里的 thinkingEnabled + reasoningEffort 反解成档位。 */
 function tierOf(cfg: AgentConfig): ThinkingTier {
   if (!cfg.thinkingEnabled) return "off"
@@ -56,6 +62,11 @@ export interface FormState {
   modelOptions: string[]
   /** 上次拉取的时间（毫秒，0 = 从没拉过）。 */
   modelOptionsAt: number
+  /** 上次查到的余额（结论行 / 明细 / 来源 / 时间），跟配置一起存，打开就能看见。 */
+  balanceText: string
+  balanceDetail: string
+  balanceSource: string
+  balanceAt: number
   // 对话
   /** 智能体设定：发给模型的系统提示词。 */
   systemPrompt: string
@@ -96,6 +107,10 @@ function toFormState(cfg: AgentConfig): FormState {
     model: cfg.model,
     modelOptions: cfg.modelOptions ?? [],
     modelOptionsAt: cfg.modelOptionsAt ?? 0,
+    balanceText: cfg.balanceText ?? "",
+    balanceDetail: cfg.balanceDetail ?? "",
+    balanceSource: cfg.balanceSource ?? "",
+    balanceAt: cfg.balanceAt ?? 0,
     systemPrompt: cfg.systemPrompt,
     maxHistory: String(cfg.maxHistory),
     thinking: tierOf(cfg),
@@ -198,13 +213,30 @@ export function ConfigPage({ onClose = () => {} }: Props) {
   /** 配置里存的模型是否在拉回来的列表里。 */
   const modelInList = models.indexOf(state.model.trim()) >= 0
   const [fetchingModels, setFetchingModels] = useState(false)
+  /** 余额查询：进行中 + 失败提示（查到的结果直接进 state，跟设置一起保存）。 */
+  const [balanceBusy, setBalanceBusy] = useState(false)
+  const [balanceMsg, setBalanceMsg] = useState("")
   /** 知识库 / 技能子页改完数据回来后，用它强制本页重算统计数字。 */
   const [, setTick] = useState(0)
   /** 向量服务测试状态 / 结果行。 */
   const [embedBusy, setEmbedBusy] = useState(false)
   const [embedMsg, setEmbedMsg] = useState("")
+  /** 自动拉模型的状态行（自动拉取失败不弹窗，只留这一行）。 */
+  const [modelMsg, setModelMsg] = useState("")
 
-  const patch = (p: Partial<FormState>) => setState({ ...state, ...p })
+  const patch = (p: Partial<FormState>) => setState((s) => ({ ...s, ...p }))
+
+  /**
+   * 打开设置页就自动拉一次：模型列表 + 余额。
+   * 只在「接口地址 + API Key」都填了的时候跑（否则一进来就是两行 401）；
+   * 自动拉取失败不弹窗（不然每开一次设置就被弹一次），只在对应位置留一行提示，
+   * 想看重试细节再点手动按钮。
+   */
+  useEffect(() => {
+    if (!state.baseUrl.trim() || !state.apiKey.trim()) return
+    void fetchModels(true)
+    void checkBalance(true)
+  }, [])
 
   // 统计数字：管理页关闭时本页会重渲染，直接重算即可
   const kbStat = kbStats()
@@ -291,14 +323,18 @@ export function ConfigPage({ onClose = () => {} }: Props) {
     }
   }
 
-  /** 拉模型列表：拿上面的地址和 Key 请求一次 <接口地址>/models。 */
-  async function fetchModels() {
+  /**
+   * 拉模型列表：拿上面的地址和 Key 请求一次 <接口地址>/models。
+   * auto = 打开设置页时自动拉：失败不弹窗，只在下面写一行状态；手动点（auto=false）照旧弹错。
+   */
+  async function fetchModels(auto = false) {
     const baseUrl = state.baseUrl.trim().replace(/\/+$/, "")
     if (!baseUrl) {
-      Dialog.alert({ message: "先填接口地址，比如 https://api.deepseek.com" })
+      if (!auto) Dialog.alert({ message: "先填接口地址，比如 https://api.deepseek.com" })
       return
     }
     setFetchingModels(true)
+    if (auto) setModelMsg("正在自动拉取模型…")
     try {
       const headers: Record<string, string> = { Accept: "application/json" }
       const key = state.apiKey.trim()
@@ -306,6 +342,12 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       const resp = await fetch(baseUrl + "/models", { headers })
       if (!resp.ok) {
         const text = await resp.text()
+        if (auto) {
+          setModelMsg(
+            `⚠️ 自动拉取失败（${resp.status}）：${oneLine(text).slice(0, 120) || "接口没返回模型列表"}`,
+          )
+          return
+        }
         Dialog.alert({
           title: `拉取失败（${resp.status}）`,
           message:
@@ -329,6 +371,10 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       }
       list.sort()
       if (list.length === 0) {
+        if (auto) {
+          setModelMsg("⚠️ 自动拉取：接口返回里没有模型列表（这条路要求 OpenAI 兼容的 GET /models）")
+          return
+        }
         Dialog.alert({
           title: "没拿到模型",
           message:
@@ -341,10 +387,46 @@ export function ConfigPage({ onClose = () => {} }: Props) {
         modelOptionsAt: Date.now(),
         model: list.indexOf(state.model.trim()) < 0 ? list[0] : state.model,
       })
+      setModelMsg("")
     } catch (e: any) {
-      Dialog.alert({ title: "拉取失败", message: e?.message ?? String(e) })
+      if (auto) setModelMsg("⚠️ 自动拉取失败：" + oneLine(String(e?.message ?? e)))
+      else Dialog.alert({ title: "拉取失败", message: e?.message ?? String(e) })
     } finally {
       setFetchingModels(false)
+    }
+  }
+
+  /**
+   * 查余额：拿「模型接口」那一栏的地址 + Key 试几个常见的余额端点。
+   * 余额查询不在 OpenAI 兼容协议里，每家路径都不一样（详见 balance_client.ts）；
+   * 查到了就存进配置，下次打开设置页不用再查就能看见。
+   */
+  async function checkBalance(auto = false) {
+    const baseUrl = state.baseUrl.trim()
+    if (!baseUrl) {
+      if (!auto) Dialog.alert({ message: "先填接口地址，比如 https://api.deepseek.com" })
+      return
+    }
+    setBalanceBusy(true)
+    setBalanceMsg("正在查询…")
+    try {
+      const r = await queryBalance(baseUrl, state.apiKey.trim())
+      if (!r.ok) {
+        setBalanceMsg("❌ 这个接口查不到余额（点按钮看试过哪些端点）")
+        if (!auto) Dialog.alert({ title: "查不到余额", message: r.error ?? "" })
+        return
+      }
+      patch({
+        balanceText: r.text,
+        balanceDetail: r.detail,
+        balanceSource: r.source,
+        balanceAt: Date.now(),
+      })
+      setBalanceMsg("")
+    } catch (e: any) {
+      setBalanceMsg("❌ " + String(e?.message ?? e))
+    } finally {
+      setBalanceBusy(false)
     }
   }
 
@@ -405,6 +487,10 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       model: state.model.trim(),
       modelOptions: models.length > 0 ? models : undefined,
       modelOptionsAt: state.modelOptionsAt || undefined,
+      balanceText: state.balanceText || undefined,
+      balanceDetail: state.balanceDetail || undefined,
+      balanceSource: state.balanceSource || undefined,
+      balanceAt: state.balanceAt || undefined,
       systemPrompt: state.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT,
       maxHistory: Math.max(1, parseInt(state.maxHistory, 10) || 50),
       thinkingEnabled: state.thinking !== "off",
@@ -499,7 +585,14 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             </FieldRow>
           </Section>
 
-          <Section title="模型">
+          <Section
+            header={<Text>模型</Text>}
+            footer={
+              <Text>
+                {`打开这一页会自动拉一次模型和余额${state.apiKey.trim() ? "" : "（先把 API Key 填上）"}；拉取失败不弹窗，点按钮重试。`}
+              </Text>
+            }
+          >
             {models.length > 0 ? (
               <Picker
                 title="模型"
@@ -520,8 +613,13 @@ export function ConfigPage({ onClose = () => {} }: Props) {
               title={fetchingModels ? "正在拉取…" : models.length > 0 ? "重新拉取" : "拉取可用模型"}
               systemImage="arrow.down.circle"
               disabled={fetchingModels}
-              action={fetchModels}
+              action={() => fetchModels()}
             />
+            {modelMsg ? (
+              <Text font="footnote" foregroundStyle="secondaryLabel">
+                {modelMsg}
+              </Text>
+            ) : null}
             {models.length > 0 ? (
               <Text font="footnote" foregroundStyle="secondaryLabel">
                 {`已拿到 ${models.length} 个模型${state.modelOptionsAt > 0 ? " · " + stamp(state.modelOptionsAt) : ""}`}
@@ -530,6 +628,32 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             {models.length > 0 && !modelInList ? (
               <Text font="footnote" foregroundStyle="secondaryLabel">
                 {`⚠️ 配置里存的「${state.model.trim() || "（空）"}」不在这个列表里（可能换过服务商）：重新选一个再保存。`}
+              </Text>
+            ) : null}
+            <HStack spacing={12} padding={{ vertical: 2 }} frame={{ maxWidth: "infinity" }}>
+              <Text>余额</Text>
+              <Spacer />
+              <Text>{state.balanceText || "未查询"}</Text>
+            </HStack>
+            {state.balanceDetail ? (
+              <Text font="footnote" foregroundStyle="secondaryLabel">
+                {state.balanceDetail}
+              </Text>
+            ) : null}
+            <Button
+              title={balanceBusy ? "正在查询…" : state.balanceText ? "重新查询余额" : "查询余额"}
+              systemImage="creditcard"
+              disabled={balanceBusy}
+              action={() => checkBalance()}
+            />
+            {balanceMsg ? (
+              <Text font="footnote" foregroundStyle="secondaryLabel">
+                {balanceMsg}
+              </Text>
+            ) : null}
+            {state.balanceText && state.balanceAt > 0 ? (
+              <Text font="footnote" foregroundStyle="secondaryLabel">
+                {`${stamp(state.balanceAt)}${state.balanceSource ? " · " + state.balanceSource : ""}`}
               </Text>
             ) : null}
           </Section>
