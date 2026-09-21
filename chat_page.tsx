@@ -7,19 +7,12 @@ import {
   deriveTitle, effectiveConfig, loadConfig, loadStore, makeSession, removeSession, saveStore,
   upsertSession, withCurrentSession,
 } from "./agent_store"
-import { dictate, runAgent, toolKindLabel } from "./agent_core"
-import { finishActivity, rememberReply, startThinking, updateThinking } from "./live_activity"
+import { runAgent, toolKindLabel } from "./agent_core"
 import { ConfigPage } from "./config_page"
 import { MountPage, mountChips } from "./mount_page"
-import { VoicePage } from "./voice_page"
 import { DRAWER_WIDTH, Sidebar } from "./sidebar"
 import { Avatar, AvatarSpec } from "./avatar"
 import { handleCallback } from "./tool_callback"
-
-function excerpt(text: string): string {
-  const t = (text ?? "").trim()
-  return t.length > 60 ? t.slice(0, 60) + "…" : t
-}
 
 /** 过程面板里嵌套小卡片的底色（iOS 单色风格，不用蓝色强调）。 */
 const STEP_FILL = "rgba(120,120,128,0.12)"
@@ -151,6 +144,22 @@ export function ProcessCard({
   )
 }
 
+/**
+ * 正文渲染：走 Markdown（`Text` 的 `attributedString` 就是 Markdown 模式）。
+ * 只用在 AI 的答复上；用户气泡保持纯文本（彩色底上换色反而花）。
+ * `cursor` 是流式输出时缀在末尾的光标。
+ */
+export function MarkdownText({ text, cursor = false, font }: {
+  text: string
+  cursor?: boolean
+  font?: any
+}) {
+  const body = cursor ? (text ?? "") + "\u258c" : (text ?? "")
+  if (!body) return null
+  return <Text attributedString={body} font={font} foregroundStyle="label" />
+}
+
+/** 用户的输入：纯文本气泡。 */
 function Bubble({ message, avatar }: { message: ChatMessage; avatar: AvatarSpec }) {
   const isUser = message.role === "user"
   return (
@@ -212,7 +221,7 @@ export function AssistantMessage({
             background="secondarySystemFill"
             clipShape={{ type: "rect", cornerRadius: 18 }}
           >
-            <Text foregroundStyle="label">{message.content}</Text>
+            <MarkdownText text={message.content} />
           </VStack>
           <Spacer />
         </HStack>
@@ -246,7 +255,7 @@ export function LiveThinking({
             clipShape={{ type: "rect", cornerRadius: 18 }}
           >
             {text ? (
-              <Text foregroundStyle="label">{text + "\u258c"}</Text>
+              <MarkdownText text={text} cursor />
             ) : (
               <HStack spacing={8}>
                 <ProgressView controlSize="small" />
@@ -263,7 +272,7 @@ export function LiveThinking({
 }
 
 /** 空会话时的「角色登场」界面。 */
-function EmptyState({ name, avatar, greet }: { name: string; avatar: AvatarSpec; greet: string }) {
+function EmptyState({ name, avatar }: { name: string; avatar: AvatarSpec }) {
   return (
     <VStack
       spacing={12}
@@ -272,7 +281,6 @@ function EmptyState({ name, avatar, greet }: { name: string; avatar: AvatarSpec;
     >
       <Avatar spec={avatar} size={76} />
       <Text font="title3" fontWeight="bold">{name}</Text>
-      <Text font="subheadline" foregroundStyle="secondaryLabel">{greet}</Text>
     </VStack>
   )
 }
@@ -285,14 +293,14 @@ export function ChatPage() {
   const [busy, setBusy] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showMounts, setShowMounts] = useState(false)
-  const [showVoice, setShowVoice] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   // 正在跑的这一轮的过程（实时画在聊天流里，结束后随消息落库）。
   const [liveReasoning, setLiveReasoning] = useState("")
   const [liveSteps, setLiveSteps] = useState<ToolStep[]>([])
   const [liveText, setLiveText] = useState("")
-  /** 快捷指令回传后要自动接着跑的那一轮（先把结果落盘、切到那个会话，等不忙了再发）。 */
-  const [autoJob, setAutoJob] = useState<{ text: string } | null>(null)
+  /** 快捷指令回传后要自动接着跑的那一轮（先把结果落盘、切到那个会话，等不忙了再发）。
+   *  hidden：这次输入不在聊天界面显示 —— 工具回传只需要喂给模型。 */
+  const [autoJob, setAutoJob] = useState<{ text: string; hidden?: boolean } | null>(null)
 
   /**
    * 快捷指令回传有两条入口，都要接：
@@ -312,7 +320,7 @@ export function ChatPage() {
       if (!out) return
       setCfg(loadConfig())
       setStore(loadStore())
-      setAutoJob({ text: out.text })
+      setAutoJob({ text: out.text, hidden: true })
     }
     consume(Script.queryParameters)
     const off = Script.onResume((d) => consume(d?.queryParameters ?? null))
@@ -326,11 +334,13 @@ export function ChatPage() {
     if (!autoJob || busy) return
     const job = autoJob
     setAutoJob(null)
-    void send(job.text)
+    void send(job.text, { hidden: job.hidden })
   }, [autoJob, busy])
 
   const current = store.sessions.find((s) => s.id === store.currentId) ?? null
   const messages = current?.messages ?? []
+  /** 界面上真正画出来的消息：hidden 的那些（工具回传）只进上下文，不上屏。 */
+  const visible = messages.filter((m) => !m.hidden)
 
   function apply(next: SessionStore) {
     saveStore(next)
@@ -348,26 +358,10 @@ export function ChatPage() {
     apply(upsertSession(store, { ...base, mounts: next }))
   }
 
+  /** 进入设置页（先收起抽屉）。 */
   function openSettings() {
     setDrawerOpen(false)
     setShowSettings(true)
-  }
-
-  /** 进入语音通话模式（文本聊天模式永远不朗读）。 */
-  function openVoice() {
-    if (!cfg.apiKey) {
-      Dialog.alert({ message: "还没配置：点右上角齿轮填一下 API Key" })
-      setShowSettings(true)
-      return
-    }
-    setDrawerOpen(false)
-    setShowVoice(true)
-  }
-
-  function closeVoice() {
-    setShowVoice(false)
-    setStore(loadStore())
-    setCfg(loadConfig())
   }
 
   function newSession() {
@@ -386,7 +380,8 @@ export function ChatPage() {
     apply(withCurrentSession(removeSession(store, id)).store)
   }
 
-  async function send(text: string) {
+  /** hidden：这条输入不在聊天界面显示，只作为上下文喂给模型（工具回传续跑走这里）。 */
+  async function send(text: string, opts?: { hidden?: boolean }) {
     const trimmed = text.trim()
     if (!trimmed || busy) return
 
@@ -404,7 +399,6 @@ export function ChatPage() {
     setLiveReasoning("")
     setLiveSteps([])
     setLiveText("")
-    await startThinking("正在思考…")
 
     // 流式增量一秒能来几十次，合并到 ~60ms 刷一次，免得把界面刷爆。
     let pendingText = ""
@@ -431,11 +425,10 @@ export function ChatPage() {
       // 会话级挂载在这里生效：工具 / MCP / 技能 / 知识库都按这个会话挂的来
       const eff = effectiveConfig(cfg, base.mounts)
       const { reply, newHistory } = await runAgent(trimmed, eff, base.messages, {
-        onEvent: (e) => {
+        onEvent: () => {
           // 调工具前可能擦过一句开场白，它不在最终回答里，清掉免得一闪就没
           pendingText = ""
           setLiveText("")
-          void updateThinking(`正在调用「${e.target}」…`)
         },
         onStep: (s) => setLiveSteps((prev) => [...prev, s]),
         onDelta: (d) => {
@@ -455,7 +448,7 @@ export function ChatPage() {
           }
           if (Date.now() - lastFlush >= 60) flush()
         },
-      })
+      }, { hiddenInput: opts?.hidden })
       flush()
       const capped = capMessages(newHistory, cfg.maxHistory)
       apply(
@@ -466,13 +459,11 @@ export function ChatPage() {
           title: isFirst ? deriveTitle(capped) : base.title,
         }),
       )
-      await finishActivity("done", excerpt(reply) || "完成")
-      rememberReply(reply)
     } catch (e: any) {
       const errMsg = "出错：" + (e?.message ?? String(e))
       const failed: ChatMessage[] = [
         ...base.messages,
-        { role: "user", content: trimmed },
+        { role: "user", content: trimmed, hidden: opts?.hidden ? true : undefined },
         { role: "assistant", content: errMsg },
       ]
       apply(
@@ -483,7 +474,6 @@ export function ChatPage() {
           title: isFirst ? deriveTitle(failed) : base.title,
         }),
       )
-      await finishActivity("error", excerpt(errMsg) || "出错")
     } finally {
       setBusy(false)
       setLiveReasoning("")
@@ -492,24 +482,8 @@ export function ChatPage() {
     }
   }
 
-  async function onDictate() {
-    if (busy) return
-    setBusy(true)
-    let text = ""
-    try {
-      text = await dictate()
-    } catch (e: any) {
-      Dialog.alert({ message: "听写失败：" + (e?.message ?? String(e)) })
-    } finally {
-      setBusy(false)
-    }
-    if (text) {
-      await send(text)
-    }
-  }
-
   const sendEnabled = !busy && input.trim().length > 0
-  const avatar: AvatarSpec = { emoji: cfg.agentEmoji || "✨", path: cfg.avatarPath }
+  const avatar: AvatarSpec = { path: cfg.avatarPath }
 
   return (
     <NavigationStack>
@@ -527,9 +501,6 @@ export function ChatPage() {
             </ToolbarItem>
             <ToolbarItem placement="topBarTrailing">
               <Button title="设置" action={openSettings} />
-            </ToolbarItem>
-            <ToolbarItem placement="topBarTrailing">
-              <Button title="语音" action={openVoice} />
             </ToolbarItem>
           </Toolbar>
         }
@@ -555,29 +526,15 @@ export function ChatPage() {
             onChanged: setShowMounts,
           },
         ]}
-        fullScreenCover={{
-          content: (
-            <VoicePage
-              store={store}
-              cfg={cfg}
-              onStore={apply}
-              onClose={closeVoice}
-            />
-          ),
-          isPresented: showVoice,
-          onChanged: (v: boolean) => {
-            if (!v) closeVoice()
-          },
-        }}
       >
         {/* 主内容 */}
         <VStack spacing={0} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
         <ScrollView defaultScrollAnchor="bottom" scrollDismissesKeyboard="interactively">
           <VStack spacing={0} padding={{ top: 12, bottom: 16 }}>
-            {messages.length === 0 ? (
-              <EmptyState name={cfg.agentName || "智能体"} avatar={avatar} greet={cfg.greetText} />
+            {visible.length === 0 ? (
+              <EmptyState name={cfg.agentName || "智能体"} avatar={avatar} />
             ) : null}
-            {messages.map((m, i) =>
+            {visible.map((m, i) =>
               m.role === "user" ? (
                 <Bubble key={"m" + i} message={m} avatar={avatar} />
               ) : (
@@ -639,9 +596,6 @@ export function ChatPage() {
               onSubmit={() => send(input)}
             />
           </HStack>
-          <Button action={onDictate} disabled={busy}>
-            <Image systemName="mic.fill" font="body" foregroundStyle="systemBlue" />
-          </Button>
           <Button action={() => send(input)} disabled={!sendEnabled}>
             <Image
               systemName="arrow.up.circle.fill"

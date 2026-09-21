@@ -553,14 +553,7 @@ export function skillsPrompt(onlyIds?: string[]): string | null {
     return `- ${s.name}：${desc}`
   })
   return (
-    "用户上传了这些技能（skill）。它们是一份份操作说明，需要时**先**用 read_skill 工具读出完整步骤，" +
-    "再照着做；不要凭技能名猜测内容。\n" +
+    "用户上传了这些技能（skill）。要用到某个技能时，先用 read_skill 读出完整步骤再照着做，不要凭技能名猜内容。\n" +
     lines.join("\n")
   )
-}
-
-/** 技能在系统提示里占的字符数（用于设置页展示）。 */
-export function skillsPromptSize(onlyIds?: string[]): number {
-  const p = skillsPrompt(onlyIds)
-  return p ? p.length : 0
 }

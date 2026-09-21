@@ -68,7 +68,7 @@ interface Props {
 export function Sidebar({
   store,
   agentName = "小助",
-  avatar = { emoji: "✨" },
+  avatar = {},
   onSelect = () => {},
   onNew = () => {},
   onDelete = () => {},
@@ -94,7 +94,7 @@ export function Sidebar({
         padding={{ horizontal: 20, top: 22, bottom: 18 }}
         frame={{ maxWidth: "infinity", alignment: "leading" }}
       >
-        <Avatar spec={avatar} size={46} font="title3" background="tertiarySystemFill" />
+        <Avatar spec={avatar} size={46} background="tertiarySystemFill" />
         <VStack alignment="leading" spacing={3}>
           <Text font="title3" fontWeight="semibold" lineLimit={1}>
             {agentName}
@@ -189,7 +189,7 @@ export function Sidebar({
                     {s.title}
                   </Text>
                   <Text font="caption2" foregroundStyle="secondaryLabel">
-                    {timeLabel(s.updatedAt)} · {s.messages.length} 条
+                    {timeLabel(s.updatedAt)} · {s.messages.filter((m) => !m.hidden).length} 条
                   </Text>
                 </VStack>
                 {isCurrent ? (

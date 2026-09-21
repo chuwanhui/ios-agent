@@ -11,11 +11,10 @@ import { DEFAULT_EMBED_PATH, embedReady, embedSettingsOf, embedTexts, QUERY_TIME
 import { skillCounts } from "./skills_store"
 import { KbPage } from "./kb_page"
 import { SkillsPage } from "./skills_page"
-import { ToolRow, ToolsPage, toAgentTools, toToolRow } from "./tools_page"
+import { FieldRow, ToolRow, ToolsPage, toAgentTools, toToolRow } from "./tools_page"
 import { McpPage } from "./mcp_page"
 import {
-  AVATAR_PATH, Avatar, PENDING_AVATAR_PATH, captureAvatarPhoto, chooseAvatarFromPhotos,
-  commitAvatar, discardAvatar, removeAvatarFile,
+  AVATAR_PATH, Avatar, PENDING_AVATAR_PATH, chooseAvatarFromPhotos, commitAvatar, discardAvatar,
 } from "./avatar"
 
 // ———————————————————————— 思考深度 ————————————————————————
@@ -46,9 +45,7 @@ function tierOf(cfg: AgentConfig): ThinkingTier {
 interface FormState {
   // 角色
   agentName: string
-  agentEmoji: string
-  greetText: string
-  /** 头像图片路径；空 = 用 emoji。选择照片时先指向暂存文件，保存时才转正。 */
+  /** 头像图片路径；空 = 显示占位图。选择照片时先指向暂存文件，保存时才转正。 */
   avatarPath: string
   // 模型
   apiKey: string
@@ -68,7 +65,6 @@ interface FormState {
   thinking: ThinkingTier
   /** 聊天页是否展示 AI 思考 / 工具调用过程。 */
   showSteps: boolean
-  speakReply: boolean
   // 工具
   tools: ToolRow[]
   // MCP
@@ -87,8 +83,6 @@ interface FormState {
 function toFormState(cfg: AgentConfig): FormState {
   return {
     agentName: cfg.agentName,
-    agentEmoji: cfg.agentEmoji,
-    greetText: cfg.greetText,
     avatarPath: cfg.avatarPath ?? "",
     apiKey: cfg.apiKey,
     baseUrl: cfg.baseUrl,
@@ -100,7 +94,6 @@ function toFormState(cfg: AgentConfig): FormState {
     maxHistory: String(cfg.maxHistory),
     thinking: tierOf(cfg),
     showSteps: cfg.showSteps !== false,
-    speakReply: cfg.speakReply,
     tools: (cfg.tools ?? []).map((t) => toToolRow(t)),
     mcpServers: (cfg.mcpServers ?? []).map((m) => ({ ...m })),
     kbEnabled: cfg.kbEnabled,
@@ -182,21 +175,6 @@ export function ConfigPage({ onClose = () => {} }: Props) {
     } catch (e: any) {
       Dialog.alert({ message: "选择照片失败：" + (e?.message ?? String(e)) })
     }
-  }
-
-  async function shootAvatar() {
-    try {
-      const path = await captureAvatarPhoto()
-      if (path) patch({ avatarPath: path })
-    } catch (e: any) {
-      Dialog.alert({ message: "拍照失败：" + (e?.message ?? String(e)) })
-    }
-  }
-
-  /** 去掉自定义照片，回到 emoji。 */
-  function dropAvatar() {
-    discardAvatar()
-    patch({ avatarPath: "" })
   }
 
   /** 取消：丢掉选了但没保存的照片。 */
@@ -357,21 +335,18 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       })
     }
 
-    // 头像：暂存文件转正；没选照片就把旧文件删掉
+    // 头像：选了照片就把暂存文件转正，没选就留空（显示占位图）
     let avatarPath = state.avatarPath.trim()
     if (avatarPath === PENDING_AVATAR_PATH) {
       avatarPath = commitAvatar() ? AVATAR_PATH : ""
     } else if (avatarPath !== AVATAR_PATH) {
       avatarPath = ""
     }
-    if (!avatarPath) removeAvatarFile()
 
     const cfg: AgentConfig = {
       ...loadConfig(),
       agentName: state.agentName.trim() || "小助",
-      agentEmoji: state.agentEmoji.trim() || "✨",
       avatarPath: avatarPath || undefined,
-      greetText: state.greetText.trim(),
       apiKey: state.apiKey.trim(),
       baseUrl: state.baseUrl.trim(),
       apiPath: state.apiPath.trim(),
@@ -383,7 +358,6 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       thinkingEnabled: state.thinking !== "off",
       reasoningEffort: state.thinking === "off" ? "" : state.thinking,
       showSteps: state.showSteps,
-      speakReply: state.speakReply,
       tools,
       mcpServers,
       kbEnabled: state.kbEnabled,
@@ -415,102 +389,60 @@ export function ConfigPage({ onClose = () => {} }: Props) {
         }}
       >
         <Form>
-          <Section
-            header={<Text>角色</Text>}
-            footer={
-              <Text>
-                助手名字会显示在聊天页顶部和左侧侧边栏。头像可以上传一张照片，也可以只填一个 emoji（✨ 🐱 🤖 🧠）。改完点「保存」生效。
-              </Text>
-            }
-          >
-            <TextField
-              title="助手名字"
-              value={state.agentName}
-              prompt="小助"
-              onChanged={(v) => patch({ agentName: v })}
-            />
-            <HStack spacing={14} padding={{ vertical: 4 }} frame={{ maxWidth: "infinity" }}>
-              <Avatar
-                spec={{ emoji: state.agentEmoji.trim() || "✨", path: state.avatarPath }}
-                size={56}
+          <Section title="角色">
+            <FieldRow label="助手名字">
+              <TextField
+                title="小助"
+                value={state.agentName}
+                onChanged={(v) => patch({ agentName: v })}
               />
+            </FieldRow>
+            <HStack spacing={14} padding={{ vertical: 4 }} frame={{ maxWidth: "infinity" }}>
+              <Avatar spec={{ path: state.avatarPath }} size={56} />
               <VStack alignment="leading" spacing={2}>
                 <Text>助手头像</Text>
                 <Text font="caption" foregroundStyle="secondaryLabel">
-                  {state.avatarPath ? "使用自定义照片" : "当前是 emoji"}
+                  {state.avatarPath ? "使用自定义照片" : "还没有照片"}
                 </Text>
               </VStack>
               <Spacer />
             </HStack>
-            <Button title="从相册选择照片" action={pickAvatar} />
-            <Button title="拍一张照片" action={shootAvatar} />
-            {state.avatarPath ? (
-              <Button title="恢复 emoji 头像" role="destructive" action={dropAvatar} />
-            ) : null}
-            <TextField
-              title="头像 emoji"
-              value={state.agentEmoji}
-              prompt="✨"
-              onChanged={(v) => patch({ agentEmoji: v })}
-            />
-            <TextField
-              title="开场白"
-              value={state.greetText}
-              prompt="说点什么，或者点下面的麦克风直接听写"
-              onChanged={(v) => patch({ greetText: v })}
+            <Button
+              title={state.avatarPath ? "从相册换一张" : "从相册选择照片"}
+              systemImage="photo.on.rectangle"
+              action={pickAvatar}
             />
           </Section>
 
-          <Section
-            header={<Text>模型接口</Text>}
-            footer={
-              <VStack alignment="leading" spacing={4}>
-                <Text>
-                  API Key：DeepSeek 的形如 sk-xxxxxxxx（32 位字符），在 platform.deepseek.com 的「API Keys」里创建。只保存在本机，不会上传到别处。
-                </Text>
-                <Text>
-                  接口地址：只填到域名（或 /v1）为止，比如 https://api.deepseek.com；请求路径另填，默认 /chat/completions。换成別的 OpenAI 兼容服务时改这两项。
-                </Text>
-              </VStack>
-            }
-          >
-            <SecureField
-              title="API Key"
-              value={state.apiKey}
-              prompt="sk-…"
-              onChanged={(v) => patch({ apiKey: v })}
-            />
-            <TextField
-              title="接口地址"
-              value={state.baseUrl}
-              prompt="https://api.deepseek.com"
-              autocorrectionDisabled
-              textInputAutocapitalization="never"
-              onChanged={(v) => patch({ baseUrl: v })}
-            />
-            <TextField
-              title="请求路径"
-              value={state.apiPath}
-              prompt="/chat/completions"
-              autocorrectionDisabled
-              textInputAutocapitalization="never"
-              onChanged={(v) => patch({ apiPath: v })}
-            />
+          <Section title="模型接口">
+            <FieldRow label="API Key">
+              <SecureField
+                title="sk-xxxxxxxx"
+                value={state.apiKey}
+                onChanged={(v) => patch({ apiKey: v })}
+              />
+            </FieldRow>
+            <FieldRow label="接口地址">
+              <TextField
+                title="https://api.deepseek.com"
+                value={state.baseUrl}
+                autocorrectionDisabled
+                textInputAutocapitalization="never"
+                onChanged={(v) => patch({ baseUrl: v })}
+              />
+            </FieldRow>
+            <FieldRow label="请求路径">
+              <TextField
+                title="/chat/completions"
+                value={state.apiPath}
+                autocorrectionDisabled
+                textInputAutocapitalization="never"
+                onChanged={(v) => patch({ apiPath: v })}
+              />
+            </FieldRow>
           </Section>
 
-          <Section
-            header={<Text>模型</Text>}
-            footer={
-              <VStack alignment="leading" spacing={4}>
-                <Text>
-                  模型不给手输：点下面的按钮，脚本拿上面的「接口地址」拼上 /models、带上你的 Key 请求一次，把服务端真正支持的模型拉回来，再从列表里选一个。
-                </Text>
-                <Text>
-                  这份列表跟着设置一起保存，下次打开还在；换了服务商或想刷新，再拉一次就行。
-                </Text>
-              </VStack>
-            }
-          >
+          <Section title="模型">
             {models.length > 0 ? (
               <Picker
                 title="模型"
@@ -554,9 +486,6 @@ export function ConfigPage({ onClose = () => {} }: Props) {
                     {`${state.thinking === t.key ? "●" : "○"} ${t.label}：${t.desc}（${t.cost}）`}
                   </Text>
                 ))}
-                <Text>
-                  档位越高，模型回答前想得越多：多步任务、需要斟酌工具参数时更准，但也更慢、更费 token。
-                </Text>
               </VStack>
             }
           >
@@ -574,14 +503,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             </Picker>
           </Section>
 
-          <Section
-            header={<Text>智能体设定</Text>}
-            footer={
-              <Text>
-                这段文字就是发给模型的系统提示词，决定它的人设、语气和边界。改坏了点「恢复默认设定」。
-              </Text>
-            }
-          >
+          <Section title="智能体设定">
             <TextField
               title="系统提示词"
               value={state.systemPrompt}
@@ -596,14 +518,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             />
           </Section>
 
-          <Section
-            header={<Text>对话</Text>}
-            footer={
-              <Text>
-                文本聊天不朗读。想边说边听就走右上角「语音」进入语音通话模式（那边会自动朗读回复）。
-              </Text>
-            }
-          >
+          <Section title="对话">
             <HStack spacing={8} frame={{ maxWidth: "infinity" }}>
               <Text>{`上下文聊天记录数量：${state.maxHistory.trim() || "50"} 条`}</Text>
               <Spacer />
@@ -626,23 +541,13 @@ export function ConfigPage({ onClose = () => {} }: Props) {
               onChanged={(v) => patch({ showSteps: v })}
             />
             <Text font="footnote" foregroundStyle="secondaryLabel">
-              打开后每条回复上方会带一张可展开的过程卡片：模型的思考内容，以及每次工具调用的名称、参数和返回结果。关掉就只看最终答复。
+              打开后每条回复上方会有一张可展开的过程卡片。
             </Text>
           </Section>
 
           <Section
             header={<Text>工具</Text>}
-            footer={
-              <VStack alignment="leading" spacing={4}>
-                <Text>
-                  「本地快捷指令工具」把手机里已有的快捷指令接进来：一个真快捷指令 = 一个工具。它是单向触发，模型只知道「已触发」，拿不到执行结果。
-                </Text>
-                <Text>
-                  「MCP 服务器」提供一批带真返回值的工具，模型能拿到结果再回答你；可以直接粘贴别处的 MCP 配置 JSON 导入。
-                </Text>
-                <Text>两个子页改完，记得回这一页点「保存」。</Text>
-              </VStack>
-            }
+            footer={<Text>两个子页改完，记得回这一页点「保存」。</Text>}
           >
             <NavRow
               icon="bolt.fill"
@@ -669,19 +574,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
           </Section>
 
 
-          <Section
-            header={<Text>知识库</Text>}
-            footer={
-              <VStack alignment="leading" spacing={4}>
-                <Text>
-                  给自己的资料建一个离线检索库：把文件放进「文件」App → Scripting → 知识库，再从下面进去导一次。
-                </Text>
-                <Text>
-                  检索全在本机做（中文双字切词 + BM25），不联网、不需要额外付费能力。开启后模型会多一个 search_knowledge 工具，问到相关资料时先去查。
-                </Text>
-              </VStack>
-            }
-          >
+          <Section title="知识库">
             <Toggle
               title="启用知识库检索"
               value={state.kbEnabled}
@@ -699,20 +592,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             />
           </Section>
 
-          <Section
-            header={<Text>知识库语义检索（可选）</Text>}
-            footer={
-              <VStack alignment="leading" spacing={4}>
-                <Text>
-                  给知识库加一层「按意思找」的能力：每个片段预先算成向量存在本机，检索时与关键词结果混合排序。现有资料不用改。
-                </Text>
-                <Text>
-                  需要一个 OpenAI 兼容的向量接口（硅基流动 / 智谱 / OpenAI / 自建都行）。不填就保持纯离线关键词检索，功能不受影响。
-                </Text>
-                <Text>换了向量模型要重新建一次向量（旧向量作废）。</Text>
-              </VStack>
-            }
-          >
+          <Section title="知识库语义检索（可选）">
             <Toggle
               title="启用语义检索"
               value={state.embedEnabled}
@@ -758,19 +638,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             ) : null}
           </Section>
 
-          <Section
-            header={<Text>技能</Text>}
-            footer={
-              <VStack alignment="leading" spacing={4}>
-                <Text>
-                  技能就是一份份操作说明（含 SKILL.md 的文件夹或 .zip）。开启后系统提示里只列技能名和描述，模型要用时会自己用 read_skill 读全文。
-                </Text>
-                <Text>
-                  注意：技能里写的脚本能不能跑，取决于脚本类型——纯 JS 的能跑，需要原生代码 / 二进制的不行（沙箱限制）。
-                </Text>
-              </VStack>
-            }
-          >
+          <Section title="技能">
             <Toggle
               title="启用技能"
               value={state.skillsEnabled}

@@ -11,7 +11,7 @@
 
   ],
   "name" : "智能体",
-  "description" : "听写 → DeepSeek 大模型 → 调用快捷指令工具 → 语音回复",
+  "description" : "聊天式手机智能体：DeepSeek 大模型 + 快捷指令 / MCP / 知识库工具调用",
   "icon" : "sparkles",
   "localizedNames" : {
     "zh" : "",

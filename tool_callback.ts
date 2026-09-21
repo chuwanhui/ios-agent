@@ -5,9 +5,9 @@
  * App 被杀掉也还在，默认 10 分钟内有效）；快捷指令末尾「打开 URL」回调
  * `scripting://run/<脚本名>?result=…` 时，我们做两件事：
  *   1. 把结果回填到那条工具步骤（过程卡片上显示「已回传」+ 真实结果）；
- *   2. 把结果当成一条新消息，让智能体接着回答。
+ *   2. 把结果当成一条**隐藏输入**（hidden: true）让智能体接着回答 —— 只进上下文，聊天界面不显示。
  *
- * 时序不变：回传只是「多了一轮新的用户输入」，不阻塞原来那轮回答，
+ * 时序不变：回传只是「多给模型一段输入」，不阻塞原来那轮回答，
  * 所以不需要等结果、也不会卡住界面。
  */
 import {
@@ -166,12 +166,12 @@ function findStep(
   return null
 }
 
-/** 回传给模型看的那条文本（也是聊天里显示的那条消息）。 */
+/** 回传给模型看的那条文本（落进会话当隐藏上下文，聊天界面不显示）。 */
 export function callbackText(shortcutName: string, result: string): string {
   const who = shortcutName ? `快捷指令「${shortcutName}」` : "快捷指令"
   return (
     `【工具回传】${who}返回：\n` + result +
-    "\n\n（这是刚才调用工具的回传结果，请结合它继续回答；不要再说拿不到结果。）"
+    "\n\n（这是刚才调用工具的回传结果，结合它继续回答；不要再说拿不到结果，也不要重复调用。）"
   )
 }
 
@@ -243,12 +243,12 @@ export function handleCallback(params: any): CallbackOutcome | null {
     patched = true
   }
 
-  // ② 回传本身不落在这里 —— 交给聊天页的 send() 当一条普通用户消息记下来，
+  // ② 回传本身不落在这里 —— 交给聊天页的 send() 记下来（带上 hidden 标记，界面上不画），
   //    否则这条消息会在历史里出现两次（send 会自己把它加进历史）。
   const updated: Session = {
     ...session,
     updatedAt: now,
-    title: session.title === NEW_SESSION_TITLE ? deriveTitle(msgs.concat([{ role: "user", content: text }])) : session.title,
+    title: session.title === NEW_SESSION_TITLE ? deriveTitle(msgs.concat([{ role: "user", content: text, hidden: true }])) : session.title,
     messages: msgs,
   }
   const next = upsertSession(store, updated)

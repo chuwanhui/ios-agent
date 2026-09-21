@@ -1,29 +1,17 @@
-import { Image, Text, VStack } from "scripting"
+import { Image, VStack } from "scripting"
 
 /**
- * 角色头像。两种形态：
- *  - 没上传照片 → 一个圆形里的 emoji（`emoji`）；
- *  - 上传了照片 → 渲染 appGroup 里的那张图（`path`），文件不见了自动退回 emoji。
+ * 角色头像：一张照片。
+ *  - 上传过照片 → 渲染 appGroup 里的那张图（`path`）；
+ *  - 没上传 / 文件没了 → 灰圆底 + 人形占位图（不再有 emoji 头像）。
  *
- * 为什么存 appGroup：只有 `appGroupDocumentsDirectory` 里的文件能被 Widget / 灵动岛读到，
+ * 为什么存 appGroup：只有 `appGroupDocumentsDirectory` 里的文件能被 Widget 读到，
  * 而且它不会同步到 iCloud。
  */
 export interface AvatarSpec {
-  emoji: string
-  /** 自定义头像图片的绝对路径；为空或文件不存在时用 emoji。 */
+  /** 自定义头像图片的绝对路径；为空或文件不存在时显示占位图。 */
   path?: string
 }
-
-/** emoji 头像用的字号（`Font` 关键字的子集）。 */
-export type AvatarFont =
-  | "largeTitle"
-  | "title"
-  | "title2"
-  | "title3"
-  | "headline"
-  | "subheadline"
-  | "body"
-  | "callout"
 
 /** 头像文件所在目录（与 config.json 同一层）。 */
 export const AVATAR_DIR = FileManager.appGroupDocumentsDirectory + "/agent"
@@ -71,7 +59,7 @@ export function saveAvatarImage(img: UIImage, dest: string = PENDING_AVATAR_PATH
 }
 
 /**
- * 从相册选一张照片。图片先落到暂存路径，点「保存」时才转正。
+ * 从相册选一张照片（唯一的头像来源）。图片先落到暂存路径，点「保存」时才转正。
  * 用户取消选择时返回 null（读取失败会抛错，交给调用方提示）。
  */
 export async function chooseAvatarFromPhotos(
@@ -105,29 +93,6 @@ export async function chooseAvatarFromPhotos(
   return img ? saveAvatarImage(img, dest) : null
 }
 
-/** 用相机拍一张当头像（前置、可裁剪）。取消时返回 null。 */
-export async function captureAvatarPhoto(
-  dest: string = PENDING_AVATAR_PATH,
-): Promise<string | null> {
-  const info = await Photos.capture({
-    mode: "photo",
-    mediaTypes: ["public.image"],
-    allowsEditing: true,
-    cameraDevice: "front",
-    cameraFlashMode: "off",
-  })
-  if (!info) return null
-  const img = info.editedImage ?? info.originalImage ?? (info.imagePath ? UIImage.fromFile(info.imagePath) : null)
-  if (info.imagePath) {
-    try {
-      FileManager.removeSync(info.imagePath)
-    } catch {
-      // 忽略
-    }
-  }
-  return img ? saveAvatarImage(img, dest) : null
-}
-
 /** 暂存头像转正（点「保存」时调用）。返回是否成功。 */
 export function commitAvatar(): boolean {
   try {
@@ -149,33 +114,21 @@ export function discardAvatar(): void {
   }
 }
 
-/** 删除正式头像文件（恢复 emoji）。 */
-export function removeAvatarFile(): void {
-  try {
-    if (fileExists(AVATAR_PATH)) FileManager.removeSync(AVATAR_PATH)
-  } catch {
-    // 忽略
-  }
-}
-
 // ———————————————————————— 视图 ————————————————————————
 
 interface Props {
   spec: AvatarSpec
   /** 圆形直径，默认 34。 */
   size?: number
-  /** emoji 字号；默认按 size 猜：> 44 用 largeTitle，否则 callout。 */
-  font?: AvatarFont
-  /** 圆底颜色。 */
+  /** 占位圆的底色。 */
   background?: "secondarySystemFill" | "tertiarySystemFill"
   onTapGesture?: () => void
 }
 
-/** 圆形头像：有照片就显示照片，否则显示 emoji。 */
+/** 圆形头像：有照片就显示照片，否则显示人形占位图。 */
 export function Avatar({
   spec,
   size = 34,
-  font,
   background = "secondarySystemFill",
   onTapGesture,
 }: Props) {
@@ -191,7 +144,8 @@ export function Avatar({
       />
     )
   }
-  const emojiFont: AvatarFont = font ?? (size > 44 ? "largeTitle" : "callout")
+  // 占位图：字号跟着直径走，太大就整体放大一点
+  const glyph = size >= 70 ? "largeTitle" : size >= 50 ? "title2" : size >= 42 ? "title3" : "callout"
   return (
     <VStack
       frame={{ width: size, height: size }}
@@ -199,9 +153,7 @@ export function Avatar({
       clipShape="circle"
       onTapGesture={onTapGesture}
     >
-      <Text font={emojiFont} scaleEffect={size >= 100 ? 2 : 1}>
-        {spec.emoji}
-      </Text>
+      <Image systemName="person.fill" font={glyph} foregroundStyle="secondaryLabel" />
     </VStack>
   )
 }

@@ -238,6 +238,7 @@ function buildMessages(
     msgs.push({ role: "system", content: sys.join("\n\n") })
   }
   for (const m of history) {
+    // hidden 的消息（工具回传）照常发给模型，只是聊天界面不显示
     msgs.push({ role: m.role, content: m.content })
   }
   msgs.push({ role: "user", content: userText })
@@ -342,7 +343,7 @@ export function mcpFunctionName(server: McpServer, toolName: string): string {
 
 /**
  * 合并四路工具，生成发给模型的 tools 数组，并记下函数名到执行目标的映射：
- *   - 快捷指令工具（单向触发，没有返回值）
+ *   - 快捷指令工具（单向触发；配了回传才有结果）
  *   - MCP 工具（远程 HTTP，有真返回值）
  *   - 内置的本地知识库检索（离线全文检索，有真返回值）
  *   - 内置的技能读取（渐进式披露，有真返回值）
@@ -411,8 +412,7 @@ async function buildToolSpecs(
             (semantic
               ? "关键词匹配 + 语义向量混合排序（提问换个说法也能找到），"
               : "离线全文检索（关键词匹配），") +
-            "返回最相关的几段原文。当用户的问题可能和他自己的资料有关（文档、笔记、说明书、产品信息…）时，先查一下再回答；" +
-            "回答时以检索到的原文为准，并说明来自哪份文件。查不到就直说没找到，不要编造。",
+            "返回最相关的几段原文。用户的问题可能和他自己的资料有关时先查一下，再以原文为准回答，并说明来自哪份文件；查不到就说没找到。",
           parameters: {
             type: "object",
             properties: {
@@ -436,7 +436,7 @@ async function buildToolSpecs(
         name,
         description:
           "读出用户上传的某个技能的完整说明（SKILL.md 全文 + 附件清单）。" +
-          "系统提示里只列了技能名和一句话描述，真正要执行某个技能时先用这个工具读全文，再严格照做。",
+          "要用某个技能时先用这个工具读全文，再严格照做。",
         parameters: {
           type: "object",
           properties: {
@@ -555,16 +555,16 @@ async function executeTool(
     text = `执行快捷指令「${tool.shortcutName}」失败（无法打开，可能快捷指令名不存在）`
   } else if (tool.returns) {
     // 配了回调 URL：先落一条 pending，快捷指令末尾「打开 URL」把结果送回来时再回填。
-    // 这一轮不等它（回传会作为一条新消息续上），所以这里必须交代清楚「结果待回」。
+    // 这一轮不等它（回传会变成一条隐藏输入续上），所以这里必须交代清楚「结果待回」。
     cid = addPending({ toolName: name, shortcutName: tool.shortcutName, args: inputText }).cid
-    const tail = "。它执行完会把结果回传（作为一条新消息出现），届时再回答；现在先说明已经触发，不要编造结果。"
+    const tail = "。它执行完会把结果回传，届时接着回答；现在只需说明已触发，不要编造结果。"
     text = keys.length > 0
       ? `已触发快捷指令「${tool.shortcutName}」，传入参数：${inputText}，正在等它回传结果` + tail
       : `已触发快捷指令「${tool.shortcutName}」（无参数），正在等它回传结果` + tail
   } else {
     // 快捷指令是单向触发：这里必须明确告诉模型「拿不到结果」，
     // 否则它会顺着上下文编造一个执行结果。
-    const tail = "。注意：这是单向触发，没有返回值，不要编造执行结果；只能说明已执行，或让用户自己看手机确认。"
+    const tail = "。注意：这是单向触发，没有返回值：只说明已执行，不要编造结果。"
     text = keys.length > 0
       ? `已触发快捷指令「${tool.shortcutName}」，传入参数：${inputText}` + tail
       : `已触发快捷指令「${tool.shortcutName}」（无参数）` + tail
@@ -580,6 +580,8 @@ export async function runAgent(
   cfg: AgentConfig,
   history: ChatMessage[],
   hooksArg?: HooksArg,
+  /** hiddenInput：这次输入不画在聊天界面（快捷指令回传续跑那一轮用）。 */
+  opts?: { hiddenInput?: boolean },
 ): Promise<{ reply: string; newHistory: ChatMessage[]; steps: ToolStep[]; reasoning: string }> {
   const hooks = normalizeHooks(hooksArg)
   const messages = buildMessages(cfg, history, userText)
@@ -688,44 +690,13 @@ export async function runAgent(
   if (steps.length > 0) assistant.steps = steps
   if (usage) assistant.usage = usage
 
+  const userMsg: ChatMessage = { role: "user", content: userText }
+  if (opts?.hiddenInput) userMsg.hidden = true
   const newHistory: ChatMessage[] = [
     ...history,
-    { role: "user", content: userText },
+    userMsg,
     assistant,
   ]
 
   return { reply, newHistory, steps, reasoning }
-}
-
-export async function dictate(): Promise<string> {
-  if (SpeechRecognition.isRecognizing) {
-    await SpeechRecognition.stop()
-  }
-
-  return new Promise<string>((resolve, reject) => {
-    let finalText = ""
-    const timeoutId = setTimeout(async () => {
-      await SpeechRecognition.stop()
-      resolve(finalText)
-    }, 15000)
-
-    SpeechRecognition.start({
-      locale: "zh-CN",
-      partialResults: true,
-      addsPunctuation: true,
-      taskHint: "dictation",
-      onResult: (result: any) => {
-        finalText = result.text
-        if (result.isFinal) {
-          clearTimeout(timeoutId)
-          resolve(result.text)
-        }
-      },
-    }).then((started: boolean) => {
-      if (!started) {
-        clearTimeout(timeoutId)
-        reject(new Error("无法启动语音识别"))
-      }
-    })
-  })
 }

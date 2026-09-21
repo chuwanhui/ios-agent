@@ -245,7 +245,6 @@ export interface AgentConfig {
   modelOptionsAt?: number
   systemPrompt: string
   maxHistory: number
-  speakReply: boolean
   maxToolRounds: number
   thinkingEnabled: boolean
   reasoningEffort: string
@@ -271,9 +270,7 @@ export interface AgentConfig {
   showSteps: boolean
   // —— 角色形象 ——
   agentName: string
-  agentEmoji: string
-  greetText: string
-  /** 用户上传的头像图片路径（图片存在 appGroup，这里只存路径）；为空则用 emoji。 */
+  /** 用户上传的头像图片路径（图片存在 appGroup，这里只存路径）；为空就显示占位图。 */
   avatarPath?: string
   /**
    * 私有 Git 仓库的访问令牌（可选），只用于「技能 → 从 Git 仓库导入」。
@@ -315,6 +312,11 @@ export interface ToolStep {
 export interface ChatMessage {
   role: "user" | "assistant"
   content: string
+  /**
+   * 只喂给模型、不在聊天界面显示的消息。快捷指令工具的回传就是这样落库的：
+   * 上下文里照常带上，聊天流里跳过不画（过程卡片上标「已回传」）。
+   */
+  hidden?: boolean
   /** 模型的推理过程（DeepSeek 思考模式返回的 reasoning_content）。 */
   reasoning?: string
   /** 这一轮里 AI 调用过的工具，按时间顺序。 */
@@ -380,7 +382,8 @@ export const NEW_SESSION_TITLE = "新对话"
 
 /** 默认的角色设定（系统提示词）。 */
 export const DEFAULT_SYSTEM_PROMPT =
-  "你是一个运行在用户手机上的智能体助手，可以调用用户的快捷指令和 MCP 工具来帮他完成任务。工具返回的结果就是事实，不要编造执行结果。回答请简洁、友好，使用中文。"
+  "你是一个运行在用户手机上的智能体助手，可以调用用户的快捷指令、MCP 工具和本地知识库来帮他完成任务。" +
+  "工具返回的结果就是事实，不要编造。回答用中文，简洁一点，可以用 Markdown 排版。"
 
 export const DEFAULT_CONFIG: AgentConfig = {
   apiKey: "",
@@ -389,7 +392,6 @@ export const DEFAULT_CONFIG: AgentConfig = {
   model: "deepseek-flash",
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   maxHistory: 50,
-  speakReply: true,
   maxToolRounds: 3,
   thinkingEnabled: true,
   reasoningEffort: "high",
@@ -404,8 +406,6 @@ export const DEFAULT_CONFIG: AgentConfig = {
   embedModel: "",
   showSteps: true,
   agentName: "小助",
-  agentEmoji: "✨",
-  greetText: "说点什么，或者点下面的麦克风直接听写",
   gitToken: "",
 }
 
@@ -496,118 +496,9 @@ export function toolDescription(t: AgentTool): string {
       ? ""
       : "\n调用时以 JSON 对象返回参数，字段名：" + specs.map(paramSummary).join("、")
   const tail = t.returns
-    ? "\n（这个快捷指令会把执行结果回传：结果到达后会作为一条新消息出现，届时再回答；" +
-      "在收到之前不要编造结果，先说明已经执行、结果稍后到。）"
-    : "\n（单向触发：调用后无返回值，不要编造执行结果。）"
+    ? "\n（这个快捷指令会把执行结果回传：先说明「已触发、结果稍后到」，收到回传内容再作答；不要编造结果。）"
+    : "\n（单向触发：没有返回值，只说明已执行，不要编造结果。）"
   return desc + params + tail
-}
-
-// ———————————————————————— 快捷指令工具：粘贴 JSON 导入 / 导出 ————————————————————————
-
-/** 从一段快捷指令工具配置 JSON 里解析出来的结果。 */
-export interface ToolParseResult {
-  /** 解析出来的工具（name 已清洗去重）。 */
-  tools: AgentTool[]
-  /** 被跳过 / 被改写的条目的说明，可直接展示给用户。 */
-  skipped: string[]
-}
-
-function strOf(v: any): string {
-  if (v === undefined || v === null) return ""
-  return typeof v === "string" ? v : String(v)
-}
-
-/** 参数类型归一化：不认识的一律当 string（快捷指令收到的本来就是文本）。 */
-function normalizeParamType(v: any): ToolParamSpec["type"] {
-  const t = strOf(v).trim().toLowerCase()
-  if (t === "number" || t === "float" || t === "double") return "number"
-  if (t === "integer" || t === "int") return "integer"
-  if (t === "boolean" || t === "bool") return "boolean"
-  return "string"
-}
-
-/** 一个参数的完整写法 → ToolParamSpec。 */
-function specFromRecord(rec: Record<string, any>, fallbackName: string): ToolParamSpec {
-  const out: ToolParamSpec = {
-    name: strOf(rec.name ?? rec.key ?? fallbackName).trim(),
-    description: strOf(rec.description ?? rec.desc ?? rec["说明"] ?? "").trim(),
-  }
-  if (rec.type !== undefined) out.type = normalizeParamType(rec.type)
-  if (rec.required === false || rec.optional === true) out.required = false
-  const en = Array.isArray(rec.enum) ? rec.enum : Array.isArray(rec.options) ? rec.options : null
-  if (en) {
-    const vals = en.map((x) => strOf(x)).filter((x) => !!x)
-    if (vals.length > 0) out.enum = vals
-  }
-  const dv = rec.default
-  if (typeof dv === "string" || typeof dv === "number" || typeof dv === "boolean") out.default = dv
-  return out
-}
-
-/** 「参数」字段的三种写法：一行一个的字符串 / 数组 / 对象。 */
-function parseParamsField(v: any): { specs: ToolParamSpec[]; problem?: string } {
-  if (v === undefined || v === null || v === "") return { specs: [] }
-  if (typeof v === "string") return { specs: parseToolParams(v) }
-  if (Array.isArray(v)) {
-    const specs: ToolParamSpec[] = []
-    for (const it of v) {
-      if (typeof it === "string") {
-        const one = parseToolParams(it)
-        if (one.length > 0) specs.push(one[0])
-        continue
-      }
-      const rec = asRecord(it)
-      if (!rec) continue
-      const s = specFromRecord(rec, "")
-      if (s.name) specs.push(s)
-    }
-    return { specs }
-  }
-  const rec = asRecord(v)
-  if (rec) {
-    const specs: ToolParamSpec[] = []
-    for (const [key, val] of entriesOf(rec)) {
-      const nm = key.trim()
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(nm)) continue
-      if (typeof val === "string") {
-        specs.push({ name: nm, description: val.trim() })
-        continue
-      }
-      const d = asRecord(val)
-      if (!d) {
-        specs.push({ name: nm, description: strOf(val).trim() })
-        continue
-      }
-      specs.push(specFromRecord(d, nm))
-    }
-    return { specs }
-  }
-  return { specs: [], problem: "「参数」写法看不懂（应该是对象或数组）" }
-}
-
-/** 从任意写法里取出「一条工具 = 一个对象」的数组。 */
-function pickToolEntries(root: any): any[] | null {
-  if (Array.isArray(root)) return root
-  const rec = asRecord(root)
-  if (!rec) return null
-  for (const key of ["shortcuts", "tools", "shortcutTools", "本地快捷指令工具", "快捷指令"]) {
-    const v = rec[key]
-    if (Array.isArray(v)) return v
-    const m = asRecord(v)
-    if (m && Object.keys(m).length > 0) {
-      return entriesOf(m).map(([k, val]) => {
-        const r = asRecord(val)
-        return r ? { ...r, __key: k } : { __key: k, __value: strOf(val) }
-      })
-    }
-  }
-  if (rec.name || rec.shortcut || rec.shortcutName || rec["快捷指令"]) return [rec]
-  // 裸映射：{"导航回家": {…}}（值都是对象时才这么认，避免把乱粘的 JSON 当成工具）
-  const keys = Object.keys(rec)
-  if (keys.length > 0 && entriesOf(rec).every(([, v]) => !!asRecord(v))) {
-    return entriesOf(rec).map(([k, val]) => ({ ...(asRecord(val) as Record<string, any>), __key: k }))
-  }
-  return null
 }
 
 const FUNC_NAME_CHARS = /[^A-Za-z0-9_-]+/g
@@ -638,130 +529,6 @@ export function makeToolFunctionName(
   if (name !== base && !note) note = `${rawName}：函数名重复，改用「${name}」`
   return { name, note }
 }
-
-/**
- * 解析一段「快捷指令工具」配置 JSON。这些写法都认：
- * - `[{…}, …]`、`{"shortcuts":[{…}]}`、`{"tools":[{…}]}`、`{"名字":{…}}`、单个 `{name, shortcut}`
- * - 字段别名：`shortcut`/`shortcutName`/`快捷指令`；`params`/`args`/`paramsHint`/`参数`
- * - 参数三种写法：`"destination": "目的地"` / `{"description":…, "type":…, "required":false, "enum":[…]}` / 数组
- * - `parameters` 写成真 JSON schema（带 properties）时原样当高级 schema
- */
-export function parseShortcutsJson(text: string): ToolParseResult {
-  const raw = (text ?? "").trim()
-  if (!raw) throw new Error("请先粘贴快捷指令工具的 JSON")
-  let root: any
-  try {
-    root = JSON.parse(raw)
-  } catch (e: any) {
-    throw new Error("JSON 格式不对：" + (e?.message ?? "解析失败"))
-  }
-  const entries = pickToolEntries(root)
-  if (!entries) {
-    throw new Error(
-      '没找到工具列表。支持 [{"name":…,"shortcut":…}]、{"shortcuts":[…] }，或单个 {"name":…,"shortcut":…}',
-    )
-  }
-
-  const out: ToolParseResult = { tools: [], skipped: [] }
-  const used = new Set<string>()
-  const seenShortcut = new Set<string>()
-
-  for (let i = 0; i < entries.length; i += 1) {
-    const rec = asRecord(entries[i])
-    const key = strOf(rec?.__key ?? "").trim()
-    const label = key || strOf(rec?.__value ?? "") || "未命名"
-    if (!rec) {
-      out.skipped.push(`${label}：配置看不懂（应该是一个对象）`)
-      continue
-    }
-    const shortcutName = strOf(
-      rec.shortcut ?? rec.shortcutName ?? rec.shortcut_name ?? rec["快捷指令"] ?? rec.__key ?? "",
-    ).trim()
-    const rawName = strOf(rec.name ?? rec.tool ?? rec.function ?? rec["名称"] ?? "").trim()
-    const description = strOf(
-      rec.description ?? rec.desc ?? rec["说明"] ?? rec.__value ?? "",
-    ).trim()
-    if (!shortcutName) {
-      out.skipped.push(`${rawName || label}：没写快捷指令名（shortcut）`)
-      continue
-    }
-    if (seenShortcut.has(shortcutName)) {
-      out.skipped.push(`${shortcutName}：同一个快捷指令重复了，只留第一条`)
-      continue
-    }
-    seenShortcut.add(shortcutName)
-
-    const named = makeToolFunctionName(rawName || key, shortcutName, i, used)
-    if (named.note) out.skipped.push(named.note)
-    const tool: AgentTool = {
-      name: named.name,
-      description: description || shortcutName,
-      shortcutName,
-    }
-
-    // 手写的完整 JSON schema（形如 {"type":"object","properties":{…}}）
-    const schemaLike = asRecord(rec.parameters ?? rec.schema)
-    const isSchema = !!asRecord(schemaLike?.properties)
-    if (isSchema && schemaLike) tool.parameters = schemaLike
-
-    const paramField =
-      rec.params ?? rec.args ?? rec.paramsHint ?? rec["参数"] ?? (isSchema ? undefined : schemaLike)
-    if (typeof paramField === "string") {
-      const h = paramField.trim()
-      if (h) tool.paramsHint = h
-    } else if (paramField !== undefined) {
-      const parsed = parseParamsField(paramField)
-      if (parsed.specs.length > 0) tool.params = parsed.specs
-      if (parsed.problem) out.skipped.push(`${named.name}：${parsed.problem}`)
-    }
-
-    if (rec.returns === true || rec.callback === true || rec.hasResult === true) tool.returns = true
-    out.tools.push(tool)
-  }
-
-  return out
-}
-
-/** 把当前工具列表导出成可直接粘贴的 JSON（存档 / 复制给别人）。 */
-export function shortcutsToJson(tools: AgentTool[]): string {
-  const arr = tools.map((t) => {
-    const o: Record<string, any> = {
-      name: t.name,
-      description: t.description,
-      shortcut: t.shortcutName,
-    }
-    if (t.params && t.params.length > 0) {
-      const ps: Record<string, any> = {}
-      for (const s of t.params) {
-        const d: Record<string, any> = {}
-        if (s.description) d.description = s.description
-        if (s.type && s.type !== "string") d.type = s.type
-        if (s.required === false) d.required = false
-        if (s.enum && s.enum.length > 0) d.enum = s.enum
-        if (s.default !== undefined && s.default !== null && String(s.default) !== "") d.default = s.default
-        ps[s.name] = Object.keys(d).length > 0 ? d : ""
-      }
-      o.params = ps
-    } else if (t.paramsHint) {
-      o.params = t.paramsHint
-    }
-    if (t.returns) o.returns = true
-    if (t.parameters) o.parameters = t.parameters
-    return o
-  })
-  return JSON.stringify({ shortcuts: arr }, null, 2)
-}
-
-/** 示例配置（也是提示框里显示的内容）。 */
-export const TOOL_JSON_EXAMPLE =
-  '{\n  "shortcuts": [\n' +
-  '    {\n      "name": "navigate_home",\n      "description": "用地图导航到某个地点",\n' +
-  '      "shortcut": "导航回家",\n      "returns": true,\n      "params": {\n' +
-  '        "destination": "目的地名称",\n' +
-  '        "mode": {\n          "description": "出行方式",\n' +
-  '          "enum": ["driving", "walking", "transit"],\n' +
-  '          "required": false,\n          "default": "driving"\n        }\n' +
-  '      }\n    }\n  ]\n}'
 
 /** 快捷指令侧要两次配置 —— 给用户复制到「快捷指令」编辑器里的协议说明。 */
 export function shortcutProtocolText(scriptName: string): string {
@@ -824,11 +591,22 @@ export function mountsFromConfig(cfg: AgentConfig, enabledSkillIds: string[]): S
 
 // ———————————————————————— 配置 ————————————————————————
 
+/**
+ * 上一版的默认系统提示词：老配置里存的还是它，
+ * 加载时静默换成新的（用户自己改过的提示词不动）。
+ */
+const LEGACY_DEFAULT_SYSTEM_PROMPT =
+  "你是一个运行在用户手机上的智能体助手，可以调用用户的快捷指令和 MCP 工具来帮他完成任务。工具返回的结果就是事实，不要编造执行结果。回答请简洁、友好，使用中文。"
+
 export function loadConfig(): AgentConfig {
   try {
     const raw = FileManager.readAsStringSync(CONFIG_FILE)
     const parsed = JSON.parse(raw)
-    return { ...DEFAULT_CONFIG, ...parsed }
+    const merged = { ...DEFAULT_CONFIG, ...parsed }
+    if (!merged.systemPrompt || merged.systemPrompt.trim() === LEGACY_DEFAULT_SYSTEM_PROMPT) {
+      merged.systemPrompt = DEFAULT_SYSTEM_PROMPT
+    }
+    return merged
   } catch {
     return { ...DEFAULT_CONFIG }
   }
@@ -850,10 +628,10 @@ export function validateConfig(cfg: AgentConfig): string | null {
 /** 配置项的键名，供快捷指令传 JSON 时识别。 */
 export const CONFIG_KEYS: string[] = [
   "apiKey", "baseUrl", "apiPath", "model", "systemPrompt",
-  "maxHistory", "speakReply", "maxToolRounds", "thinkingEnabled",
+  "maxHistory", "maxToolRounds", "thinkingEnabled",
   "reasoningEffort", "tools", "mcpServers", "kbEnabled", "skillsEnabled",
   "embedEnabled", "embedBaseUrl", "embedPath", "embedApiKey", "embedModel",
-  "showSteps", "agentName", "agentEmoji", "greetText", "avatarPath", "gitToken",
+  "showSteps", "agentName", "avatarPath", "gitToken",
   "modelOptions", "modelOptionsAt",
 ]
 
@@ -886,9 +664,9 @@ export function makeSession(): Session {
   return { id: newSessionId(), title: NEW_SESSION_TITLE, createdAt: now, updatedAt: now, messages: [] }
 }
 
-/** 用第一条用户消息生成会话标题。 */
+/** 用第一条用户消息生成会话标题（工具回传那种隐藏消息不算）。 */
 export function deriveTitle(messages: ChatMessage[]): string {
-  const first = messages.find((m) => m.role === "user")
+  const first = messages.find((m) => m.role === "user" && !m.hidden)
   const t = (first?.content ?? "").trim().replace(/\s+/g, " ")
   if (!t) return NEW_SESSION_TITLE
   return t.length > 18 ? t.slice(0, 18) + "…" : t

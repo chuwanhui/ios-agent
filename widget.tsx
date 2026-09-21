@@ -14,7 +14,7 @@ import { Avatar } from "./avatar"
  *  - `<Link>`：卡片里的局部热区（注意 `Link` 会让整块 widget 的 `widgetURL` 失效）。
  *
  * 不引 `agent_core` / `chat_page`：widget 扩展里只要配置和会话标题，别把网络、
- * 听写那些东西拖进来。
+ * 工具调用那些东西拖进来。
  */
 
 /** 相对时间，widget 上够用就行（今天给时刻，否则给日期）。 */
@@ -37,7 +37,6 @@ function shortTime(ts: number): string {
 
 interface Snapshot {
   name: string
-  emoji: string
   avatarPath?: string
   /** 最近一次对话的一句话状态；没有会话就是空。 */
   recent: string
@@ -46,13 +45,11 @@ interface Snapshot {
 
 function snapshot(): Snapshot {
   let name = "智能体"
-  let emoji = "🫧"
   let avatarPath: string | undefined
   let needsKey = false
   try {
     const cfg = loadConfig()
     if (cfg.agentName && cfg.agentName.trim()) name = cfg.agentName.trim()
-    if (cfg.agentEmoji && cfg.agentEmoji.trim()) emoji = cfg.agentEmoji.trim()
     avatarPath = cfg.avatarPath
     needsKey = !cfg.apiKey
   } catch {
@@ -73,7 +70,7 @@ function snapshot(): Snapshot {
     // 会话文件还没建立
   }
 
-  return { name, emoji, avatarPath, recent, needsKey }
+  return { name, avatarPath, recent, needsKey }
 }
 
 /** 卡片里那一行小字：优先报告「还没填 Key」这种真的卡住的事。 */
@@ -96,7 +93,7 @@ function Launcher() {
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
         widgetURL={url}
       >
-        <Avatar spec={{ emoji: snap.emoji, path: snap.avatarPath }} size={44} font="largeTitle" />
+        <Avatar spec={{ path: snap.avatarPath }} size={44} />
         <Spacer />
         <Text font="headline" fontWeight="bold" lineLimit={1}>
           {snap.name}
@@ -118,7 +115,7 @@ function Launcher() {
       frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
       widgetURL={url}
     >
-      <Avatar spec={{ emoji: snap.emoji, path: snap.avatarPath }} size={54} font="title" />
+      <Avatar spec={{ path: snap.avatarPath }} size={54} />
       <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity", alignment: "leading" }}>
         <Text font="title3" fontWeight="bold" lineLimit={1}>
           {snap.name}

@@ -1,13 +1,11 @@
 import { Intent, Script } from "scripting"
 import { loadConfig, loadStore, saveStore, upsertSession, withCurrentSession, capMessages, deriveTitle, tryApplyConfigJson } from "./agent_store"
-import { runAgent, dictate } from "./agent_core"
-import { startThinking, updateThinking, finishActivity, rememberReply } from "./live_activity"
+import { runAgent } from "./agent_core"
 
-function excerpt(text: string): string {
-  const t = (text ?? "").trim()
-  return t.length > 60 ? t.slice(0, 60) + "…" : t
-}
-
+/**
+ * 快捷指令入口：把传入的文本当一轮对话发给模型，结果作为快捷指令的返回值。
+ * 输入为空就直接退出（不再走语音听写）。
+ */
 function getInputText(): string {
   const sp = Intent.shortcutParameter
   if (sp != null) {
@@ -45,23 +43,14 @@ async function run() {
       return
     }
 
-    let userText = inputText
-    if (!userText) {
-      userText = await dictate()
-    }
-    if (!userText) {
-      Script.exit(Intent.text("没有听到内容"))
+    if (!inputText) {
+      Script.exit(Intent.text("没有收到输入内容：给这个快捷指令传一段文本再试"))
       return
     }
 
-    // 尽力而为：后台运行时 Live Activity 可能无法启动，失败不影响回答。
-    await startThinking(excerpt(userText) || "正在思考…")
-
     const history = withCurrentSession(loadStore())
     const session = history.session
-    const { reply, newHistory } = await runAgent(userText, cfg, session.messages, (e) => {
-      void updateThinking(`正在调用「${e.target}」…`)
-    })
+    const { reply, newHistory } = await runAgent(inputText, cfg, session.messages)
 
     const capped = capMessages(newHistory, cfg.maxHistory)
     saveStore(
@@ -73,18 +62,9 @@ async function run() {
       }),
     )
 
-    await finishActivity("done", excerpt(reply) || "完成")
-    rememberReply(reply)
-
-    if (cfg.speakReply) {
-      await Speech.speak(reply)
-    }
-
     Script.exit(Intent.text(reply))
   } catch (e: any) {
-    const msg = "出错：" + (e?.message ?? String(e))
-    await finishActivity("error", excerpt(msg) || "出错")
-    Script.exit(Intent.text(msg))
+    Script.exit(Intent.text("出错：" + (e?.message ?? String(e))))
   }
 }
 

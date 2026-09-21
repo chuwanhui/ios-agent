@@ -13,12 +13,9 @@ import {
 } from "scripting"
 import {
   AgentTool,
-  TOOL_JSON_EXAMPLE,
   ToolParamSpec,
   makeToolFunctionName,
-  parseShortcutsJson,
   shortcutProtocolText,
-  shortcutsToJson,
   toolParamSpecs,
 } from "./agent_store"
 
@@ -41,7 +38,7 @@ export interface ToolRow {
   params: ParamDraft[]
   /** 这个快捷指令末尾配了回调 URL、会把结果传回来。 */
   returns?: boolean
-  /** 高级：配置 JSON 里手写的完整 JSON schema（优先级最高）。 */
+  /** 高级：手写的完整 JSON schema（优先级最高）。 */
   parameters?: Record<string, any>
 }
 
@@ -53,7 +50,7 @@ export interface ParamDraft {
   required: boolean
   /** 可选值，用「、」或逗号分隔；留空表示不限。 */
   enumText: string
-  /** 导入的 JSON 里带的类型 / 默认值：界面不编辑它们，保存时原样带回。 */
+  /** 带类型 / 默认值的参数：界面不编辑这两项，保存时原样带回。 */
   type?: ToolParamSpec["type"]
   defaultValue?: ToolParamSpec["default"]
 }
@@ -236,7 +233,7 @@ function paramsHelp(shortcut: string, specs: ToolParamSpec[]): string {
 }
 
 /** 表单里的「标签 + 输入框」一行（TextField 的 title 是占位符，只会消失，所以标签得自己画）。 */
-function FieldRow(props: { label: string; children: any }) {
+export function FieldRow(props: { label: string; children: any }) {
   return (
     <HStack spacing={8}>
       <Text frame={{ width: 84, alignment: "leading" }} foregroundStyle="secondaryLabel">
@@ -260,13 +257,10 @@ interface Props {
  */
 export function ToolsPage({ rows, onChange }: Props) {
   const [draft, setDraft] = useState<ToolRow[]>(rows.map((r) => ({ ...r })))
-  const [note, setNote] = useState("")
   /** 工具行里的即时反馈（试运行结果 / 拷贝结果），按行 id 归属。 */
   const [toolNote, setToolNote] = useState<{ id: string; text: string } | null>(null)
   /** 展开了「快捷指令那边怎么配」的那条工具。 */
   const [openHint, setOpenHint] = useState("")
-  /** 高级：粘贴 JSON 批量导入用的文本框。 */
-  const [json, setJson] = useState("")
 
   function push(next: ToolRow[]) {
     setDraft(next)
@@ -279,7 +273,6 @@ export function ToolsPage({ rows, onChange }: Props) {
 
   function add() {
     push([...draft, newToolRow()])
-    setNote("")
   }
 
   /** 一键把「快捷指令」App 里拷来的名字贴上，省得手敲出细微差别。 */
@@ -351,63 +344,6 @@ export function ToolsPage({ rows, onChange }: Props) {
     } catch (e: any) {
       setToolNote({ id: t.id, text: "打开失败：" + (e?.message ?? String(e)) })
     }
-  }
-
-  // —— 导出 / 导入 ——
-
-  /** 把当前工具导成一段 JSON（备份 / 贴给别人用）。 */
-  async function copyJson() {
-    try {
-      const built = toAgentTools(draft)
-      if (built.error) {
-        setNote(built.error)
-        return
-      }
-      await Pasteboard.setString(shortcutsToJson(built.tools))
-      setNote("已复制当前工具的 JSON（备份 / 贴给别人用）。")
-    } catch (e: any) {
-      setNote("写剪贴板失败：" + (e?.message ?? String(e)))
-    }
-  }
-
-  /** 把剪贴板里的 JSON 贴进下面的文本框（先看清楚，再决定要不要导入）。 */
-  async function pasteJsonFromClipboard() {
-    try {
-      const text = (await Pasteboard.getString()) ?? ""
-      if (!text.trim()) {
-        setNote("剪贴板是空的。")
-        return
-      }
-      setJson(text)
-      setNote("已贴进下面的文本框，检查没问题再点「导入这批工具」。")
-    } catch (e: any) {
-      setNote("读剪贴板失败：" + (e?.message ?? String(e)))
-    }
-  }
-
-  /** 文本框里的 JSON → 追加成工具草稿行。 */
-  function importJson() {
-    try {
-      const parsed = parseShortcutsJson(json)
-      const added = parsed.tools.map((t) => toToolRow(t))
-      if (added.length === 0) {
-        setNote("这段 JSON 里没有可用的工具。")
-        return
-      }
-      push([...draft, ...added])
-      const skipped = parsed.skipped?.length ?? 0
-      setNote(
-        `已导入 ${added.length} 条${skipped > 0 ? `，跳过 ${skipped} 条（格式看不懂）` : ""}。` +
-          "往下一条条核对快捷指令名和参数。",
-      )
-      setJson("")
-    } catch (e: any) {
-      setNote(String(e?.message ?? e))
-    }
-  }
-
-  function fillExample() {
-    setJson(TOOL_JSON_EXAMPLE)
   }
 
   return (
@@ -544,7 +480,7 @@ export function ToolsPage({ rows, onChange }: Props) {
               {t.parameters ? (
                 <VStack alignment="leading" spacing={6}>
                   <Text font="footnote" foregroundStyle="secondaryLabel">
-                    {`这条用的是导入的完整参数 schema（比上面的表单参数优先级高），字段：${Object.keys(
+                    {`这条用的是手写的完整参数 schema（比上面的表单参数优先级高），字段：${Object.keys(
                       t.parameters?.properties ?? {},
                     ).join("、") || "（没有声明字段）"}`}
                   </Text>
@@ -617,7 +553,7 @@ export function ToolsPage({ rows, onChange }: Props) {
                 默认是单向触发：模型只知道「已触发」，拿不到执行结果，也不会编造结果。想让模型看到结果，就打开「回传」开关，再按工具里的「显示『快捷指令』那边怎么配」加回传动作（里面有可一键拷贝的 URL）。
               </Text>
               <Text>
-                回传到达时（10 分钟内），结果会写回那张过程卡片（标「已回传」）并接着回复你；哪怕 App 之前被关掉，回调也会把它拉回来接上。
+                回传到达时（10 分钟内），结果会写回那张过程卡片（标「已回传」）并接着回复你——回传内容本身不会作为消息出现在聊天里；哪怕 App 之前被关掉，回调也会把它拉回来接上。
               </Text>
             </VStack>
           }
@@ -626,50 +562,6 @@ export function ToolsPage({ rows, onChange }: Props) {
           {draft.length === 0 ? (
             <Text foregroundStyle="secondaryLabel">还没有本地快捷指令工具</Text>
           ) : null}
-          <Button title="拷贝当前工具 JSON（备份）" systemImage="doc.on.doc" action={copyJson} />
-          {note ? (
-            <Text font="footnote" foregroundStyle="secondaryLabel">
-              {note}
-            </Text>
-          ) : null}
-        </Section>
-
-        <Section
-          header={<Text>高级 · 粘贴 JSON 批量导入</Text>}
-          footer={
-            <VStack alignment="leading" spacing={4}>
-              <Text>
-                一次贴一批工具进来：导出过的备份、或者别人给的配置都行，会追加在现有工具后面。
-              </Text>
-              <Text>
-                这里只认「快捷指令工具」的那份 JSON（就是上面拷出去的那种）。整份设置（带 apiKey 那些）别在这儿导入，用「快捷指令」把 JSON 传给这个脚本那条路改设置。
-              </Text>
-            </VStack>
-          }
-        >
-          <TextField
-            title="粘贴工具 JSON"
-            value={json}
-            axis="vertical"
-            frame={{ minHeight: 120 }}
-            autocorrectionDisabled
-            textInputAutocapitalization="never"
-            onChanged={(v: string) => setJson(v)}
-          />
-          <HStack spacing={8}>
-            <Button
-              title="粘贴剪贴板内容"
-              systemImage="doc.on.clipboard"
-              action={pasteJsonFromClipboard}
-            />
-            <Button title="填个示例" systemImage="wand.and.stars" action={fillExample} />
-          </HStack>
-          <Button
-            title="导入这批工具"
-            systemImage="square.and.arrow.down"
-            action={importJson}
-            disabled={!json.trim()}
-          />
         </Section>
       </Form>
     </VStack>
