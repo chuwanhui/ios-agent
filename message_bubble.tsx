@@ -159,12 +159,17 @@ export function collectFiles(steps: ToolStep[]): string[] {
   return out
 }
 
-/** 弹出系统文件菜单：存储到「文件」/ 拷贝 / 打印 / 用别的 App 打开。 */
+/** 弹出系统「存储到『文件』」面板；不可用时退回到旧菜单。 */
 async function openFileMenu(path: string) {
   try {
-    await DocumentInteraction.optionsMenu(path)
-  } catch (e: any) {
-    Dialog.alert({ message: "打不开这个文件：" + (e?.message ?? String(e)) })
+    const data = FileManager.readAsDataSync(path)
+    await DocumentPicker.exportFiles({ files: [{ data, name: baseName(path) }] })
+  } catch (_) {
+    try {
+      await DocumentInteraction.optionsMenu(path)
+    } catch (e: any) {
+      Dialog.alert({ message: "打不开这个文件：" + (e?.message ?? String(e)) })
+    }
   }
 }
 

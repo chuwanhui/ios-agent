@@ -240,7 +240,11 @@ function buildMessages(
   }
   for (const m of history) {
     // hidden 的消息（工具回传）照常发给模型，只是聊天界面不显示
-    msgs.push({ role: m.role, content: m.content })
+    if (m.role === "assistant" && m.toolNotes) {
+      msgs.push({ role: m.role, content: (m.content ?? "") + "\n\n" + m.toolNotes })
+    } else {
+      msgs.push({ role: m.role, content: m.content })
+    }
   }
   msgs.push({ role: "user", content: userText })
   return msgs
@@ -743,7 +747,10 @@ export async function runAgent(
   const reasoning = clip(reasonings.join("\n\n"), REASONING_CLIP)
   const assistant: ChatMessage = { role: "assistant", content: reply }
   if (reasoning) assistant.reasoning = reasoning
-  if (steps.length > 0) assistant.steps = steps
+  if (steps.length > 0) {
+    assistant.steps = steps
+    assistant.toolNotes = steps.map(s => `[${toolKindLabel(s.kind)}${s.target ? " " + s.target : ""}] ${s.ok ? "✓" : "✗"}${s.result ? " → " + s.result.slice(0, 80) : ""}`).join("\n")
+  }
   if (usage) assistant.usage = usage
 
   const userMsg: ChatMessage = { role: "user", content: userText }

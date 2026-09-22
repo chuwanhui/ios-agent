@@ -384,6 +384,11 @@ export interface ChatMessage {
    * 上下文里照常带上，聊天流里跳过不画（过程卡片上标「已回传」）。
    */
   hidden?: boolean
+  /**
+   * 本轮实际调用过工具的摘要（只有调用了工具才有）。
+   * 会随历史喂给模型，避免它下一轮忘掉自己会调用工具。
+   */
+  toolNotes?: string
   /** 模型的推理过程（DeepSeek 思考模式返回的 reasoning_content）。 */
   reasoning?: string
   /** 这一轮里 AI 调用过的工具，按时间顺序。 */
