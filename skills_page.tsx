@@ -7,6 +7,7 @@ import {
 } from "./skills_store"
 import { loadConfig } from "./agent_store"
 import { importSkillFromRepo } from "./repo_import"
+import { saveToolbar } from "./config_save"
 
 /** 搜索匹配：技能名 / 描述，大小写不敏感。 */
 function matchesSkill(s: SkillMeta, query: string): boolean {
@@ -135,6 +136,7 @@ export function SkillsPage({ onChanged = () => {} }: Props) {
     <VStack
       navigationTitle="技能"
       navigationBarTitleDisplayMode="inline"
+      toolbar={saveToolbar()}
       searchable={{
         value: query,
         onChanged: setQuery,
@@ -147,7 +149,7 @@ export function SkillsPage({ onChanged = () => {} }: Props) {
           header={<Text>{skills.length > 0 ? `技能 ${skills.length} 个` : "技能列表"}</Text>}
           footer={
             <Text>
-              点一条进去看它的完整说明（SKILL.md）、启停和删除。启用状态是立刻生效的，不用回设置页保存。
+              点一条进去看它的完整说明（SKILL.md）、启停和删除；启用 / 停用、删除都是点一下立刻生效，不用等保存。
             </Text>
           }
         >
@@ -362,7 +364,11 @@ export function SkillDetail({ meta, onChanged, onDeleted }: DetailProps) {
   }
 
   return (
-    <VStack navigationTitle={meta.name} navigationBarTitleDisplayMode="inline">
+    <VStack
+      navigationTitle={meta.name}
+      navigationBarTitleDisplayMode="inline"
+      toolbar={saveToolbar()}
+    >
       <Form>
         <Section
           header={<Text>{meta.enabled ? "已启用" : "已停用"}</Text>}

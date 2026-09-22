@@ -1,19 +1,20 @@
 import {
-  Button, fetch, Form, HStack, Image, NavigationLink, NavigationStack, Picker, Section, SecureField,
+  Button, Form, HStack, Image, NavigationLink, NavigationStack, Picker, Section, SecureField,
   Spacer, Text, TextField, Toggle, VStack, useEffect, useState,
 } from "scripting"
 import {
-  AgentConfig, DEFAULT_SYSTEM_PROMPT, McpServer, loadConfig, makeMcpServer, saveConfig,
+  AgentConfig, DEFAULT_SYSTEM_PROMPT, McpServer, ModelProvider, loadConfig, makeMcpServer, saveConfig,
   validateConfig,
 } from "./agent_store"
 import { kbStats } from "./kb_store"
 import { DEFAULT_EMBED_PATH, embedReady, embedSettingsOf, embedTexts, QUERY_TIMEOUT_MS } from "./embed_client"
-import { queryBalance } from "./balance_client"
+import { ModelsPage, providerLabel, providerSubtitle, toProviders } from "./models_page"
 import { skillCounts } from "./skills_store"
 import { KbPage } from "./kb_page"
 import { SkillsPage } from "./skills_page"
 import { FieldRow, ToolRow, ToolsPage, toAgentTools, toToolRow } from "./tools_page"
 import { McpPage } from "./mcp_page"
+import { registerConfigSaver } from "./config_save"
 import {
   AVATAR_PATH, Avatar, PENDING_AVATAR_PATH, chooseAvatarFromPhotos, commitAvatar, discardAvatar,
 } from "./avatar"
@@ -29,18 +30,6 @@ const TIERS: { key: ThinkingTier; label: string; desc: string; cost: string }[] 
   { key: "high", label: "深度", desc: "反复斟酌，多步任务更稳", cost: "最慢、最费 token" },
 ]
 
-/** 时间戳 → 「09-22 23:07」（显示模型列表上次拉取时间用）。 */
-function stamp(ms: number): string {
-  const d = new Date(ms)
-  const p = (n: number) => (n < 10 ? "0" + n : String(n))
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
-
-/** 把可能多行的错误正文压成一行（自动拉取的状态行放不下换行）。 */
-function oneLine(s: string): string {
-  return (s || "").replace(/\s+/g, " ").trim()
-}
-
 /** 把配置里的 thinkingEnabled + reasoningEffort 反解成档位。 */
 function tierOf(cfg: AgentConfig): ThinkingTier {
   if (!cfg.thinkingEnabled) return "off"
@@ -53,20 +42,9 @@ export interface FormState {
   agentName: string
   /** 头像图片路径；空 = 显示占位图。选择照片时先指向暂存文件，保存时才转正。 */
   avatarPath: string
-  // 模型
-  apiKey: string
-  baseUrl: string
-  apiPath: string
-  model: string
-  /** 上次从 /models 拉回来的可用模型；界面只能从这里选（不给手输）。 */
-  modelOptions: string[]
-  /** 上次拉取的时间（毫秒，0 = 从没拉过）。 */
-  modelOptionsAt: number
-  /** 上次查到的余额（结论行 / 明细 / 来源 / 时间），跟配置一起存，打开就能看见。 */
-  balanceText: string
-  balanceDetail: string
-  balanceSource: string
-  balanceAt: number
+  // 模型供应商：每家一套地址 / Key / 模型，聊天用 activeProviderId 那一家
+  providers: ModelProvider[]
+  activeProviderId: string
   // 对话
   /** 智能体设定：发给模型的系统提示词。 */
   systemPrompt: string
@@ -101,16 +79,8 @@ function toFormState(cfg: AgentConfig): FormState {
   return {
     agentName: cfg.agentName,
     avatarPath: cfg.avatarPath ?? "",
-    apiKey: cfg.apiKey,
-    baseUrl: cfg.baseUrl,
-    apiPath: cfg.apiPath,
-    model: cfg.model,
-    modelOptions: cfg.modelOptions ?? [],
-    modelOptionsAt: cfg.modelOptionsAt ?? 0,
-    balanceText: cfg.balanceText ?? "",
-    balanceDetail: cfg.balanceDetail ?? "",
-    balanceSource: cfg.balanceSource ?? "",
-    balanceAt: cfg.balanceAt ?? 0,
+    providers: (cfg.providers ?? []).map((p) => ({ ...p, modelOptions: (p.modelOptions ?? []).slice() })),
+    activeProviderId: cfg.activeProviderId ?? "",
     systemPrompt: cfg.systemPrompt,
     maxHistory: String(cfg.maxHistory),
     thinking: tierOf(cfg),
@@ -208,35 +178,23 @@ export function AbilitySection({
 
 export function ConfigPage({ onClose = () => {} }: Props) {
   const [state, setState] = useState<FormState>(() => toFormState(loadConfig()))
-  /** 可用模型 = 上次从接口拉回来的那份（只能从这里选，不给手输）。空 = 还没拉过。 */
-  const models = state.modelOptions
-  /** 配置里存的模型是否在拉回来的列表里。 */
-  const modelInList = models.indexOf(state.model.trim()) >= 0
-  const [fetchingModels, setFetchingModels] = useState(false)
-  /** 余额查询：进行中 + 失败提示（查到的结果直接进 state，跟设置一起保存）。 */
-  const [balanceBusy, setBalanceBusy] = useState(false)
-  const [balanceMsg, setBalanceMsg] = useState("")
   /** 知识库 / 技能子页改完数据回来后，用它强制本页重算统计数字。 */
   const [, setTick] = useState(0)
   /** 向量服务测试状态 / 结果行。 */
   const [embedBusy, setEmbedBusy] = useState(false)
   const [embedMsg, setEmbedMsg] = useState("")
-  /** 自动拉模型的状态行（自动拉取失败不弹窗，只留这一行）。 */
-  const [modelMsg, setModelMsg] = useState("")
-
   const patch = (p: Partial<FormState>) => setState((s) => ({ ...s, ...p }))
 
+  /** 当前使用的那家供应商（列表空 / 指针失效时退回到第一家）。 */
+  const activeRow =
+    state.providers.find((p) => p.id === state.activeProviderId) ??
+    state.providers.find((p) => (p.baseUrl ?? "").trim()) ??
+    state.providers[0]
+
   /**
-   * 打开设置页就自动拉一次：模型列表 + 余额。
-   * 只在「接口地址 + API Key」都填了的时候跑（否则一进来就是两行 401）；
-   * 自动拉取失败不弹窗（不然每开一次设置就被弹一次），只在对应位置留一行提示，
-   * 想看重试细节再点手动按钮。
+   * 自动拉取（模型 + 余额）挪到了「供应商与模型」子页：那一页打开时会给
+   * 「当前使用」那家静默拉一次，失败只留一行提示、不弹窗。
    */
-  useEffect(() => {
-    if (!state.baseUrl.trim() || !state.apiKey.trim()) return
-    void fetchModels(true)
-    void checkBalance(true)
-  }, [])
 
   // 统计数字：管理页关闭时本页会重渲染，直接重算即可
   const kbStat = kbStats()
@@ -324,134 +282,55 @@ export function ConfigPage({ onClose = () => {} }: Props) {
   }
 
   /**
-   * 拉模型列表：拿上面的地址和 Key 请求一次 <接口地址>/models。
-   * auto = 打开设置页时自动拉：失败不弹窗，只在下面写一行状态；手动点（auto=false）照旧弹错。
+   * 写盘：校验 → saveConfig。返回是否真的写成功（校验没过会弹窗并返回 false）。
+   * 设置页自己的「保存」和子页右上角的「保存」都走这里，判等逻辑只有一份。
    */
-  async function fetchModels(auto = false) {
-    const baseUrl = state.baseUrl.trim().replace(/\/+$/, "")
-    if (!baseUrl) {
-      if (!auto) Dialog.alert({ message: "先填接口地址，比如 https://api.deepseek.com" })
-      return
-    }
-    setFetchingModels(true)
-    if (auto) setModelMsg("正在自动拉取模型…")
-    try {
-      const headers: Record<string, string> = { Accept: "application/json" }
-      const key = state.apiKey.trim()
-      if (key) headers.Authorization = "Bearer " + key
-      const resp = await fetch(baseUrl + "/models", { headers })
-      if (!resp.ok) {
-        const text = await resp.text()
-        if (auto) {
-          setModelMsg(
-            `⚠️ 自动拉取失败（${resp.status}）：${oneLine(text).slice(0, 120) || "接口没返回模型列表"}`,
-          )
-          return
-        }
-        Dialog.alert({
-          title: `拉取失败（${resp.status}）`,
-          message:
-            text.slice(0, 400) ||
-            "服务端没返回可用模型列表。核一下接口地址、Key 和网络，再点一次「拉取可用模型」。",
-        })
-        return
-      }
-      const data: any = await resp.json()
-      const raw: any[] = Array.isArray(data?.data)
-        ? data.data
-        : Array.isArray(data?.models)
-          ? data.models
-          : Array.isArray(data)
-            ? data
-            : []
-      const list: string[] = []
-      for (const item of raw) {
-        const id = typeof item === "string" ? item : item?.id ?? item?.name
-        if (typeof id === "string" && id.trim() && list.indexOf(id) < 0) list.push(id.trim())
-      }
-      list.sort()
-      if (list.length === 0) {
-        if (auto) {
-          setModelMsg("⚠️ 自动拉取：接口返回里没有模型列表（这条路要求 OpenAI 兼容的 GET /models）")
-          return
-        }
-        Dialog.alert({
-          title: "没拿到模型",
-          message:
-            "接口返回里没有模型列表。这条路要求接口是 OpenAI 兼容的（支持 GET /models + Bearer Key），换一个能列出模型的接口地址再拉。",
-        })
-        return
-      }
-      patch({
-        modelOptions: list,
-        modelOptionsAt: Date.now(),
-        model: list.indexOf(state.model.trim()) < 0 ? list[0] : state.model,
+  function persist(): boolean {
+    // 供应商草稿 → 存盘的供应商（全空的丢掉）；聊天只用「当前使用」那家
+    const providers = toProviders(state.providers)
+    if (providers.length === 0) {
+      Dialog.alert({
+        title: "还没有模型供应商",
+        message:
+          "进「供应商与模型」加一家：填个名字、接口地址和 API Key，拉一次模型再从列表里选一个。",
       })
-      setModelMsg("")
-    } catch (e: any) {
-      if (auto) setModelMsg("⚠️ 自动拉取失败：" + oneLine(String(e?.message ?? e)))
-      else Dialog.alert({ title: "拉取失败", message: e?.message ?? String(e) })
-    } finally {
-      setFetchingModels(false)
+      return false
     }
-  }
-
-  /**
-   * 查余额：拿「模型接口」那一栏的地址 + Key 试几个常见的余额端点。
-   * 余额查询不在 OpenAI 兼容协议里，每家路径都不一样（详见 balance_client.ts）；
-   * 查到了就存进配置，下次打开设置页不用再查就能看见。
-   */
-  async function checkBalance(auto = false) {
-    const baseUrl = state.baseUrl.trim()
-    if (!baseUrl) {
-      if (!auto) Dialog.alert({ message: "先填接口地址，比如 https://api.deepseek.com" })
-      return
+    const activeId = providers.some((p) => p.id === state.activeProviderId)
+      ? state.activeProviderId
+      : providers[0].id
+    const active =
+      providers.find((p) => p.id === activeId) ?? providers.find((p) => p.baseUrl) ?? providers[0]
+    const label = providerLabel(active)
+    if (!active.baseUrl) {
+      Dialog.alert({ message: `「${label}」还没填接口地址，进去补上。` })
+      return false
     }
-    setBalanceBusy(true)
-    setBalanceMsg("正在查询…")
-    try {
-      const r = await queryBalance(baseUrl, state.apiKey.trim())
-      if (!r.ok) {
-        setBalanceMsg("❌ 这个接口查不到余额（点按钮看试过哪些端点）")
-        if (!auto) Dialog.alert({ title: "查不到余额", message: r.error ?? "" })
-        return
-      }
-      patch({
-        balanceText: r.text,
-        balanceDetail: r.detail,
-        balanceSource: r.source,
-        balanceAt: Date.now(),
-      })
-      setBalanceMsg("")
-    } catch (e: any) {
-      setBalanceMsg("❌ " + String(e?.message ?? e))
-    } finally {
-      setBalanceBusy(false)
+    if (!active.apiKey) {
+      Dialog.alert({ message: `「${label}」还没填 API Key，进去补上。` })
+      return false
     }
-  }
-
-  function save() {
     // 模型只能从拉回来的列表里选：没拉过 / 存的模型已不在列表，都不让保存
-    if (models.length === 0) {
+    const opts = active.modelOptions ?? []
+    if (opts.length === 0) {
       Dialog.alert({
         title: "还没拉取模型",
-        message:
-          "填好上面的「接口地址」和「API Key」，到「模型」那一点「拉取可用模型」——脚本会请求一次 /models，把服务端真正支持的模型列出来，再从列表里选一个。",
+        message: `「${label}」还没拉过模型列表：进「供应商与模型」→ 点这一家 → 点「拉取可用模型」（脚本会请求一次 /models，把服务端真正支持的模型列出来），再从列表里选一个。`,
       })
-      return
+      return false
     }
-    if (!modelInList) {
+    if (opts.indexOf(active.model) < 0) {
       Dialog.alert({
         title: "模型要重新选",
-        message: `配置里存的「${state.model.trim() || "（空）"}」不在拉回来的列表里（可能换过服务商或接口变了）。重新拉一次，再从列表里选一个。`,
+        message: `「${label}」存的模型「${active.model || "（空）"}」不在拉回来的列表里（可能换过服务商或接口变了）。重新拉一次，再从列表里选一个。`,
       })
-      return
+      return false
     }
     // 工具：草稿行 → AgentTool（顺带补回以前会被丢掉的「参数」）
     const built = toAgentTools(state.tools)
     if (built.error) {
       Dialog.alert({ message: built.error })
-      return
+      return false
     }
     const tools = built.tools
 
@@ -481,16 +360,8 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       ...loadConfig(),
       agentName: state.agentName.trim() || "小助",
       avatarPath: avatarPath || undefined,
-      apiKey: state.apiKey.trim(),
-      baseUrl: state.baseUrl.trim(),
-      apiPath: state.apiPath.trim(),
-      model: state.model.trim(),
-      modelOptions: models.length > 0 ? models : undefined,
-      modelOptionsAt: state.modelOptionsAt || undefined,
-      balanceText: state.balanceText || undefined,
-      balanceDetail: state.balanceDetail || undefined,
-      balanceSource: state.balanceSource || undefined,
-      balanceAt: state.balanceAt || undefined,
+      providers,
+      activeProviderId: activeId,
       systemPrompt: state.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT,
       maxHistory: Math.max(1, parseInt(state.maxHistory, 10) || 50),
       thinkingEnabled: state.thinking !== "off",
@@ -515,11 +386,21 @@ export function ConfigPage({ onClose = () => {} }: Props) {
     const err = validateConfig(cfg)
     if (err) {
       Dialog.alert({ message: err })
-      return
+      return false
     }
     saveConfig(cfg)
-    onClose()
+    return true
   }
+
+  /** 设置页右上角那个「保存」：存完顺手关掉设置页。 */
+  function save() {
+    if (persist()) onClose()
+  }
+
+  // 子页右上角的「保存」按钮也走这份逻辑（见 config_save.tsx）。写在渲染里，
+  // 保证登记进总线的永远是最新那份 state；本页卸载时清掉。
+  registerConfigSaver(persist)
+  useEffect(() => () => registerConfigSaver(null), [])
 
   return (
     <NavigationStack>
@@ -557,103 +438,34 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             />
           </Section>
 
-          <Section title="模型接口">
-            <FieldRow label="API Key">
-              <SecureField
-                title="sk-xxxxxxxx"
-                value={state.apiKey}
-                onChanged={(v) => patch({ apiKey: v })}
-              />
-            </FieldRow>
-            <FieldRow label="接口地址">
-              <TextField
-                title="https://api.deepseek.com"
-                value={state.baseUrl}
-                autocorrectionDisabled
-                textInputAutocapitalization="never"
-                onChanged={(v) => patch({ baseUrl: v })}
-              />
-            </FieldRow>
-            <FieldRow label="请求路径">
-              <TextField
-                title="/chat/completions"
-                value={state.apiPath}
-                autocorrectionDisabled
-                textInputAutocapitalization="never"
-                onChanged={(v) => patch({ apiPath: v })}
-              />
-            </FieldRow>
-          </Section>
-
           <Section
             header={<Text>模型</Text>}
             footer={
               <Text>
-                {`打开这一页会自动拉一次模型和余额${state.apiKey.trim() ? "" : "（先把 API Key 填上）"}；拉取失败不弹窗，点按钮重试。`}
+                支持多家供应商：每家一套接口地址、API Key 和模型，聊天用「当前使用」那一家。进子页会自动给当前那家拉一次模型和余额。
               </Text>
             }
           >
-            {models.length > 0 ? (
-              <Picker
-                title="模型"
-                pickerStyle="menu"
-                value={modelInList ? state.model : ""}
-                onChanged={(v: string) => patch({ model: v })}
-              >
-                {models.map((m) => (
-                  <Text key={m} tag={m}>
-                    {m}
-                  </Text>
-                ))}
-              </Picker>
-            ) : (
-              <Text foregroundStyle="secondaryLabel">还没拉到模型，先点下面的按钮拉一次。</Text>
-            )}
-            <Button
-              title={fetchingModels ? "正在拉取…" : models.length > 0 ? "重新拉取" : "拉取可用模型"}
-              systemImage="arrow.down.circle"
-              disabled={fetchingModels}
-              action={() => fetchModels()}
+            <NavRow
+              icon="cpu"
+              title="供应商与模型"
+              detail={
+                activeRow
+                  ? `${providerLabel(activeRow)} · ${providerSubtitle(activeRow)}`
+                  : "还没有，进去加一家"
+              }
+              destination={
+                <ModelsPage
+                  rows={state.providers}
+                  activeId={state.activeProviderId}
+                  onChange={(rows) => patch({ providers: rows })}
+                  onActiveChange={(id) => patch({ activeProviderId: id })}
+                />
+              }
             />
-            {modelMsg ? (
+            {state.providers.length > 0 ? (
               <Text font="footnote" foregroundStyle="secondaryLabel">
-                {modelMsg}
-              </Text>
-            ) : null}
-            {models.length > 0 ? (
-              <Text font="footnote" foregroundStyle="secondaryLabel">
-                {`已拿到 ${models.length} 个模型${state.modelOptionsAt > 0 ? " · " + stamp(state.modelOptionsAt) : ""}`}
-              </Text>
-            ) : null}
-            {models.length > 0 && !modelInList ? (
-              <Text font="footnote" foregroundStyle="secondaryLabel">
-                {`⚠️ 配置里存的「${state.model.trim() || "（空）"}」不在这个列表里（可能换过服务商）：重新选一个再保存。`}
-              </Text>
-            ) : null}
-            <HStack spacing={12} padding={{ vertical: 2 }} frame={{ maxWidth: "infinity" }}>
-              <Text>余额</Text>
-              <Spacer />
-              <Text>{state.balanceText || "未查询"}</Text>
-            </HStack>
-            {state.balanceDetail ? (
-              <Text font="footnote" foregroundStyle="secondaryLabel">
-                {state.balanceDetail}
-              </Text>
-            ) : null}
-            <Button
-              title={balanceBusy ? "正在查询…" : state.balanceText ? "重新查询余额" : "查询余额"}
-              systemImage="creditcard"
-              disabled={balanceBusy}
-              action={() => checkBalance()}
-            />
-            {balanceMsg ? (
-              <Text font="footnote" foregroundStyle="secondaryLabel">
-                {balanceMsg}
-              </Text>
-            ) : null}
-            {state.balanceText && state.balanceAt > 0 ? (
-              <Text font="footnote" foregroundStyle="secondaryLabel">
-                {`${stamp(state.balanceAt)}${state.balanceSource ? " · " + state.balanceSource : ""}`}
+                {`一共 ${state.providers.length} 家${activeRow ? "，正在用 " + providerLabel(activeRow) : ""}`}
               </Text>
             ) : null}
           </Section>
@@ -728,7 +540,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
 
           <Section
             header={<Text>工具</Text>}
-            footer={<Text>两个子页改完，记得回这一页点「保存」。</Text>}
+            footer={<Text>两个子页右上角都有「保存」，在那里改完就地点一下，也能行。</Text>}
           >
             <NavRow
               icon="bolt.fill"

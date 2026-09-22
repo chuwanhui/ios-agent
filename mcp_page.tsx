@@ -3,6 +3,7 @@ import {
 } from "scripting"
 import { McpServer, makeMcpServer, mcpServersToJson, parseMcpServersJson } from "./agent_store"
 import { listMcpTools } from "./mcp_client"
+import { saveToolbar } from "./config_save"
 
 /** 从地址里抠出主机名，列表里当一行摘要用。 */
 function hostOf(url: string): string {
@@ -105,7 +106,7 @@ export function McpPage({ servers, onChange }: Props) {
     if (res.skipped.length > 0) {
       lines.push("未导入：\n" + res.skipped.map((s) => "· " + s).join("\n"))
     }
-    if (fresh.length > 0) lines.push("回设置页点「保存」才会生效。")
+    if (fresh.length > 0) lines.push("点右上角「保存」就会生效（也可以回设置页保存）。")
     setNote(lines.join("\n\n"))
   }
 
@@ -126,6 +127,7 @@ export function McpPage({ servers, onChange }: Props) {
     <VStack
       navigationTitle="MCP 服务器"
       navigationBarTitleDisplayMode="inline"
+      toolbar={saveToolbar()}
       searchable={{
         value: query,
         onChanged: setQuery,
@@ -136,7 +138,7 @@ export function McpPage({ servers, onChange }: Props) {
       <Form>
         <Section
           header={<Text>{draft.length > 0 ? `服务器 ${draft.length} 台` : "MCP 服务器"}</Text>}
-          footer={<Text>点一台进去才是它的详细配置。改完回设置页点「保存」才会生效。</Text>}
+          footer={<Text>点一台进去才是它的详细配置。改完点右上角「保存」就会生效。</Text>}
         >
           {draft.length === 0 ? (
             <Text foregroundStyle="secondaryLabel">还没有 MCP 服务器，用下面的「添加服务器」加一台。</Text>
@@ -188,7 +190,7 @@ export function McpPage({ servers, onChange }: Props) {
               <Text>
                 不想每次都去连，可以在详情页先把「启用」关掉；工具清单会缓存 5 分钟，改完配置点「测试连接」会强制重新拉一次。
               </Text>
-              <Text>改完回设置页点「保存」才会生效。</Text>
+              <Text>改完点右上角「保存」就会生效（也可以回设置页保存）。</Text>
             </VStack>
           }
         >
@@ -296,7 +298,11 @@ export function McpDetail({ index, initial, onChange, onDelete }: DetailProps) {
   }
 
   return (
-    <VStack navigationTitle={serverTitle(m)} navigationBarTitleDisplayMode="inline">
+    <VStack
+      navigationTitle={serverTitle(m)}
+      navigationBarTitleDisplayMode="inline"
+      toolbar={saveToolbar()}
+    >
       <Form>
         <Section header={<Text>{`MCP 服务器 ${index + 1}`}</Text>} footer={<Text>名称只是给你自己看的，模型看到的是服务器提供的工具清单。</Text>}>
           <TextField
@@ -337,7 +343,7 @@ export function McpDetail({ index, initial, onChange, onDelete }: DetailProps) {
           header={<Text>连接</Text>}
           footer={
             <Text>
-              工具清单会缓存 5 分钟；「测试连接」会强制重新拉一次。改完回设置页点「保存」才会生效。
+              工具清单会缓存 5 分钟；「测试连接」会强制重新拉一次。改完点右上角「保存」就会生效。
             </Text>
           }
         >

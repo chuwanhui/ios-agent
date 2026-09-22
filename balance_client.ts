@@ -13,7 +13,10 @@
  *   - DeepSeek   `GET /user/balance`            → `{ is_available, balance_infos:[{ currency, total_balance, granted_balance, topped_up_balance }] }`
  *   - OpenRouter `GET /api/v1/credits`          → `{ data: { total_credits, total_usage } }`
  *   - OpenRouter `GET /api/v1/auth/key`         → `{ data: { label, usage, limit, is_free_tier } }`
- *   - 硅基流动    `GET /v1/user/info`            → `{ data: { …, balance } }`
+ *   - 硅基流动    `GET /v1/user/info`            → `{ data: { …, balance, chargeBalance, totalBalance } }`
+ *                 ⚠️ 官方**已停止下发余额**（2025-06 起 name/image/email 脱敏的延续）：这个端点
+ *                 还在、鉴权也正常，但三个金额字段恒为 0、`status` 恒为空串，官方确认没有替代接口。
+ *                 所以「全 0」必须判成**查不到**，不能拿它当余额显示（否则会骗人）。
  *   - Moonshot   `GET /v1/users/me/balance`     → `{ data: { available_balance, voucher_balance, cash_balance } }`
  */
 
@@ -160,14 +163,59 @@ function parseKnownKeys(data: any): Parsed | null {
   return null
 }
 
-/** 一次解析：先认各家专属形状，再通用兜底。 */
-function parseAny(data: any): Parsed | null {
-  return (
+/** 硅基流动 `{ data: { …, balance, chargeBalance, totalBalance, status } }`
+ *
+ *  官方已停止下发余额（见 `siliconFlowLimited`），这里只负责「万一它哪天恢复下发」怎么展示：
+ *  主数用账户总余额 `totalBalance`，明细给充值与赠送。.com（国际站）按美元、其他按人民币。 */
+function parseSiliconFlow(data: any, url: string): Parsed | null {
+  const o = data?.data ?? data
+  if (!o || typeof o !== "object") return null
+  if (!("chargeBalance" in o) && !("totalBalance" in o)) return null
+  const cur = /siliconflow\.com/i.test(url) ? "USD" : "CNY"
+  const total = isNum(o.totalBalance) ? o.totalBalance : undefined
+  const gift = isNum(o.balance) ? o.balance : undefined
+  const value = total !== undefined && toNum(total) !== 0 ? total : gift
+  if (value === undefined) return null
+  const detail: string[] = []
+  if (isNum(o.chargeBalance)) detail.push(`充值 ${money(cur, o.chargeBalance)}`)
+  if (gift !== undefined && value !== gift && toNum(gift) !== 0) detail.push(`赠送 ${money(cur, gift)}`)
+  return { text: money(cur, value), detail: detail.join(" · ") }
+}
+
+/** 硅基流动「接口在、但不再下发余额」的判定。
+ *
+ *  两个条件都满足才认（宁可不报也不能乱报）：三个金额字段全是 0（或缺失）+ `status` 是空串。
+ *  官方文档的示例至今还写着 `balance: "0.88"`，所以**不能**靠文档判断，只能看实际返回。 */
+const SILICONFLOW_LIMITED_WHY =
+  "这家已停止通过 API 下发余额（端点和 Key 都正常，但金额字段恒为 0、status 恒为空串；官方确认没有替代接口），只能到它官网控制台看"
+
+function siliconFlowLimited(data: any): string | null {
+  const o = data?.data ?? data
+  if (!o || typeof o !== "object") return null
+  if (!("chargeBalance" in o) && !("totalBalance" in o)) return null
+  if (String(o.status ?? "").trim() !== "") return null
+  for (const k of ["balance", "chargeBalance", "totalBalance"]) {
+    if (k in o && isNum(o[k]) && toNum(o[k]) !== 0) return null
+  }
+  return SILICONFLOW_LIMITED_WHY
+}
+
+/** 一次解析的结论：拿到金额 / 官方已停止下发 / 认不出来（null）。 */
+export type BalancePayload =
+  | { kind: "ok"; text: string; detail: string }
+  | { kind: "limited"; why: string }
+
+/** 一次解析（导出是为了能拿假数据离线自测）：先认各家专属形状，再通用兜底。 */
+export function parseBalancePayload(data: any, url: string): BalancePayload | null {
+  const limited = siliconFlowLimited(data)
+  if (limited) return { kind: "limited", why: limited }
+  const parsed =
     parseDeepSeek(data) ??
+    parseSiliconFlow(data, url) ??
     parseOpenRouterCredits(data) ??
     parseOpenRouterKey(data) ??
     parseKnownKeys(data)
-  )
+  return parsed ? { kind: "ok", text: parsed.text, detail: parsed.detail } : null
 }
 
 /** 取 `https://host[:port]`（不靠 URL 构造函数，JS 环境里不一定有）。 */
@@ -250,12 +298,16 @@ export async function queryBalance(baseUrlRaw: string, apiKey: string): Promise<
       } catch {
         data = null
       }
-      const parsed = data ? parseAny(data) : null
-      if (!parsed) {
+      const payload = data ? parseBalancePayload(data, url) : null
+      if (!payload) {
         tried.push(`${short} → 返回里没有金额字段`)
         continue
       }
-      return { ok: true, text: parsed.text, detail: parsed.detail, source: short }
+      if (payload.kind === "limited") {
+        tried.push(`${short} → ${payload.why}`)
+        continue
+      }
+      return { ok: true, text: payload.text, detail: payload.detail, source: short }
     } catch (e: any) {
       tried.push(`${short} → ${String(e?.message ?? e)}`)
     }
@@ -270,7 +322,7 @@ export async function queryBalance(baseUrlRaw: string, apiKey: string): Promise<
       "这个接口没给出余额。已经试过：",
       ...tried,
       "",
-      "余额查询不在 OpenAI 兼容协议里，只有服务商自己实现（DeepSeek / OpenRouter / 硅基流动 / Moonshot 有）；中转站多半查不到 —— 这种情况只能上服务商官网看。",
+      "余额查询不在 OpenAI 兼容协议里，只有服务商自己实现：DeepSeek / OpenRouter / Moonshot 能查到，硅基流动的端点还在但官方已停止下发余额；中转站多半查不到 —— 这种情况只能上服务商官网看。",
     ].join("\n"),
   }
 }

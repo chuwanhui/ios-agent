@@ -8,6 +8,7 @@ import {
 import {
   autoEmbedAfterImport, buildKbVectors, dropKbVectors, kbSemanticEnabled, kbVectorStatus,
 } from "./kb_embed"
+import { saveToolbar } from "./config_save"
 
 interface Props {
   /** 资料或文件夹有变化时通知设置页刷新统计。 */
@@ -233,7 +234,11 @@ export function KbPage({ onChanged = () => {} }: Props) {
   }
 
   return (
-    <VStack navigationTitle="知识库" navigationBarTitleDisplayMode="inline">
+    <VStack
+      navigationTitle="知识库"
+      navigationBarTitleDisplayMode="inline"
+      toolbar={saveToolbar()}
+    >
       <Form>
         <Section
           header={<Text>上传文件</Text>}

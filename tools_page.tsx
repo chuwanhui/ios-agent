@@ -19,6 +19,7 @@ import {
   shortcutProtocolText,
   toolParamSpecs,
 } from "./agent_store"
+import { saveToolbar } from "./config_save"
 
 /**
  * 设置页里「本地快捷指令工具」的草稿行。
@@ -326,6 +327,7 @@ export function ToolsPage({ rows, onChange }: Props) {
     <VStack
       navigationTitle="本地快捷指令工具"
       navigationBarTitleDisplayMode="inline"
+      toolbar={saveToolbar()}
       searchable={{
         value: query,
         onChanged: setQuery,
@@ -343,7 +345,7 @@ export function ToolsPage({ rows, onChange }: Props) {
               <Text>
                 一个真·快捷指令 = 一个工具。点一条进去才是它的详细配置：名字必须和「快捷指令」App 里完全一致（可以手输，也可以先拷贝名字再点「粘贴剪贴板里的名字」）。
               </Text>
-              <Text>改完回设置页点「保存」才生效。</Text>
+              <Text>改完点右上角「保存」就生效（回设置页保存也一样）。</Text>
             </VStack>
           }
         >
@@ -482,7 +484,11 @@ export function ToolDetail({ index, initial, onChange, onDelete }: DetailProps) 
   const shortcut = (t.shortcutName ?? "").trim() || auto
 
   return (
-    <VStack navigationTitle={toolTitle(t)} navigationBarTitleDisplayMode="inline">
+    <VStack
+      navigationTitle={toolTitle(t)}
+      navigationBarTitleDisplayMode="inline"
+      toolbar={saveToolbar()}
+    >
       <Form>
         <Section
           header={<Text>{`快捷指令工具 ${index + 1}`}</Text>}
