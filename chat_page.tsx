@@ -458,6 +458,8 @@ export function ChatPage() {
 
     setBusy(true)
     setInput("")
+    const userMsg: ChatMessage = { role: "user", content: trimmed, hidden: opts?.hidden ? true : undefined }
+    apply(upsertSession(store, { ...base, messages: [...base.messages, userMsg], updatedAt: Date.now() }))
     setLiveReasoning("")
     setLiveSteps([])
     setLiveText("")
