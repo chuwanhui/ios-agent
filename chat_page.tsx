@@ -3,7 +3,7 @@ import {
   Text, TextField, Toolbar, ToolbarItem, VStack, ZStack, useEffect, useState,
 } from "scripting"
 import {
-  AgentConfig, ChatMessage, SessionMounts, SessionStore, TokenUsage, ToolStep, capMessages,
+  AgentConfig, ChatMessage, NEW_SESSION_TITLE, SessionMounts, SessionStore, TokenUsage, ToolStep, capMessages,
   deriveTitle, effectiveConfig, loadConfig, loadStore, makeSession, removeSession, saveStore,
   upsertSession, withCurrentSession,
 } from "./agent_store"
@@ -13,6 +13,7 @@ import { MountPage, mountChips } from "./mount_page"
 import { DRAWER_WIDTH, Sidebar } from "./sidebar"
 import { Avatar, AvatarSpec } from "./avatar"
 import { handleCallback } from "./tool_callback"
+import { handleRegisterShortcut } from "./xcallback"
 
 /** 过程面板里嵌套小卡片的底色（iOS 单色风格，不用蓝色强调）。 */
 const STEP_FILL = "rgba(120,120,128,0.12)"
@@ -369,6 +370,23 @@ export function ChatPage() {
    * 因为它的闭包里装着刚刷新过的 store / cfg（onResume 的闭包是旧的）。
    */
   useEffect(() => {
+    /** 在「当前会话」末尾追加一条本地产生的 assistant 消息（x-callback 注册这类，
+     *  不走大模型）。用 loadStore 读写，冷启动被 URL 拉起时也能用。 */
+    const appendLocal = (text: string) => {
+      const next = withCurrentSession(loadStore())
+      const s = next.session
+      const msg: ChatMessage = { role: "assistant", content: text }
+      const msgs = [...(s.messages ?? []), msg]
+      saveStore(
+        upsertSession(next.store, {
+          ...s,
+          updatedAt: Date.now(),
+          title: s.title === NEW_SESSION_TITLE ? deriveTitle(msgs) : s.title,
+          messages: msgs,
+        }),
+      )
+      setStore(loadStore())
+    }
     const consume = (params: any) => {
       let out: ReturnType<typeof handleCallback> = null
       try {
@@ -376,10 +394,24 @@ export function ChatPage() {
       } catch {
         out = null
       }
-      if (!out) return
-      setCfg(loadConfig())
-      setStore(loadStore())
-      setAutoJob({ text: out.text, hidden: true })
+      if (out) {
+        setCfg(loadConfig())
+        setStore(loadStore())
+        setAutoJob({ text: out.text, hidden: true })
+        return
+      }
+      // 不是回传：看看是不是 x-callback-url 的注册类动作（如 registerShortcut）。
+      void (async () => {
+        let xo = null
+        try {
+          xo = await handleRegisterShortcut(params)
+        } catch {
+          xo = null
+        }
+        if (!xo) return
+        setCfg(loadConfig())
+        if (!xo.silent) appendLocal(xo.text)
+      })()
     }
     consume(Script.queryParameters)
     const off = Script.onResume((d) => consume(d?.queryParameters ?? null))

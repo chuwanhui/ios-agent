@@ -174,7 +174,7 @@ export interface Capability {
 const TYPES = ["string", "number", "integer", "boolean"]
 
 /** 模型给的工具参数声明 → ToolParamSpec[]（坏数据直接丢掉，不报错）。 */
-function normalizeParams(raw: any): ToolParamSpec[] | undefined {
+export function normalizeParams(raw: any): ToolParamSpec[] | undefined {
   if (!Array.isArray(raw)) return undefined
   const out: ToolParamSpec[] = []
   for (const item of raw) {

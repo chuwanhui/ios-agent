@@ -57,6 +57,28 @@
 
 工具只能在工具页的表单里一条条加（快捷指令名 / 说明 / 参数行 / 工具名 / 回传开关）—— 界面里没有 JSON 导入，也没有把工具导出成 JSON 的功能；要批量准备工具，就手写 `config.json` 的 `tools` 字段（格式见下）。
 
+### 外部注册工具：x-callback-url
+
+除了在 App 里手填，也可以让外部应用 / 快捷指令通过 URL scheme 把一条快捷指令的信息注册进来（`action=registerShortcut`），注册完 AI 就能调用：
+
+```
+scripting://run/智能体?action=registerShortcut
+  &name=navigate_home          # 可选：AI 看到的函数名，缺省按快捷指令名生成
+  &shortcutName=导航回家        # 必填：要和「快捷指令」App 里一字不差
+  &description=用地图导航到目的地 # 必填：告诉 AI 什么时候用
+  &params=[{"name":"destination","description":"目的地"}]  # 可选：结构化参数 JSON 数组
+  &paramsHint=destination=目的地 # 可选：一行一个 `字段名=说明`，params 优先
+  &returns=true                 # 可选：这条快捷指令会按协议回传结果
+  &silent=1                     # 可选：只注册不回话（默认会把注册结果写进会话历史）
+  &x-success=myapp://done?text={text}&name={name}   # 可选：成功时回跳，{...} 会被真实值替换
+  &x-error=myapp://error?message={errorMessage}     # 可选：失败时回跳
+```
+
+- 走的是标准 x-callback-url 风格：任意已登录 Scripting 的 URL scheme 入口都能触发（冷启动或运行中都行）。
+- 重复注册同一条 `shortcutName` 会**覆盖更新**，不会叠出两条。
+- 同名工具名冲突时函数名会自动加后缀去重。外部那条快捷指令没在「快捷指令」App 里建 / 名字对不上时，AI 调用会如实报「可能快捷指令名不存在」，不会编造结果。
+- 参数格式和配置文件里一致：`params` 支持结构化 JSON 数组，`paramsHint` 是 `字段名=说明` 的简写。
+
 ### 配置文件里的样子
 
 下面这段是手写 `config.json` 时 `tools` 字段的格式（`tools` 是个数组，这里是其中一条）：
