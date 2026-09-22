@@ -2,7 +2,7 @@ import {
   Button,
   Form,
   HStack,
-  NavigationLink,
+  Image,
   Script,
   Section,
   Spacer,
@@ -20,6 +20,7 @@ import {
   toolParamSpecs,
 } from "./agent_store"
 import { saveToolbar } from "./config_save"
+import { pushRoute, registerRoute } from "./nav_route"
 
 /**
  * 设置页里「本地快捷指令工具」的草稿行。
@@ -272,9 +273,14 @@ function matchesTool(t: ToolRow, query: string): boolean {
 }
 
 /** 列表行的「名字 + 摘要」，点进去才是详情。 */
-function ToolListRow(props: { row: ToolRow; index: number; destination: any }) {
+function ToolListRow(props: { row: ToolRow; index: number; route: string }) {
   return (
-    <NavigationLink destination={props.destination}>
+    <HStack
+      spacing={8}
+      frame={{ maxWidth: "infinity", alignment: "leading" }}
+      contentShape="rect"
+      onTapGesture={() => pushRoute(props.route)}
+    >
       <VStack alignment="leading" spacing={3} frame={{ maxWidth: "infinity", alignment: "leading" }}>
         <Text fontWeight="semibold" foregroundStyle="label">
           {toolTitle(props.row)}
@@ -283,7 +289,8 @@ function ToolListRow(props: { row: ToolRow; index: number; destination: any }) {
           {toolSubtitle(props.row, props.index)}
         </Text>
       </VStack>
-    </NavigationLink>
+      <Image systemName="chevron.right" font="footnote" foregroundStyle="tertiaryLabel" />
+    </HStack>
   )
 }
 
@@ -296,7 +303,7 @@ interface Props {
 
 /**
  * 「本地快捷指令工具」子页：上面搜索框，中间工具列表，点一条进详情页配。
- * 由设置页用 NavigationLink 推进来，所以这里**不用**再套 NavigationStack。
+ * 由设置页用 path 路由推进来（见 nav_route.ts），所以这里**不用**再套 NavigationStack。
  */
 export function ToolsPage({ rows, onChange }: Props) {
   const [draft, setDraft] = useState<ToolRow[]>(rows.map((r) => ({ ...r })))
@@ -319,6 +326,22 @@ export function ToolsPage({ rows, onChange }: Props) {
   function remove(i: number) {
     push(draft.filter((_, idx) => idx !== i))
   }
+
+  // 详情页的路由：path 里出现 "tool:<id>" 就造这一条的详情页。写在渲染里，
+  // 保证 update / remove 用的下标和当前草稿一致。
+  registerRoute("tool:", (id) => {
+    const i = draft.findIndex((r) => r.id === id)
+    const t = draft[i]
+    if (!t) return null
+    return (
+      <ToolDetail
+        index={i}
+        initial={t}
+        onChange={(p) => update(i, p)}
+        onDelete={() => remove(i)}
+      />
+    )
+  })
 
   const indexed = draft.map((t, i) => ({ t, i }))
   const shown = indexed.filter((x) => matchesTool(x.t, query))
@@ -345,7 +368,7 @@ export function ToolsPage({ rows, onChange }: Props) {
               <Text>
                 一个真·快捷指令 = 一个工具。点一条进去才是它的详细配置：名字必须和「快捷指令」App 里完全一致（可以手输，也可以先拷贝名字再点「粘贴剪贴板里的名字」）。
               </Text>
-              <Text>改完点右上角「保存」就生效（回设置页保存也一样）。</Text>
+              <Text>改完点右上角「保存」就生效，并退回设置页（回设置页保存也一样）。</Text>
             </VStack>
           }
         >
@@ -355,19 +378,7 @@ export function ToolsPage({ rows, onChange }: Props) {
             <Text foregroundStyle="secondaryLabel">{`没有名字里带「${query.trim()}」的工具。`}</Text>
           ) : (
             shown.map(({ t, i }) => (
-              <ToolListRow
-                key={t.id}
-                row={t}
-                index={i}
-                destination={
-                  <ToolDetail
-                    index={i}
-                    initial={t}
-                    onChange={(p) => update(i, p)}
-                    onDelete={() => remove(i)}
-                  />
-                }
-              />
+              <ToolListRow key={t.id} row={t} index={i} route={"tool:" + t.id} />
             ))
           )}
         </Section>
@@ -406,7 +417,7 @@ interface DetailProps {
 
 /**
  * 单条工具的详情页：原来铺在列表里的全部配置都在这里，一个不删。
- * 用 NavigationLink 从列表推进来，所以不用再套 NavigationStack。
+ * 现在由「工具列表」页用 path 路由推进来（见 nav_route.ts），所以不用再套 NavigationStack。
  */
 export function ToolDetail({ index, initial, onChange, onDelete }: DetailProps) {
   const [t, setT] = useState<ToolRow>({ ...initial, params: (initial.params ?? []).map((p) => ({ ...p })) })

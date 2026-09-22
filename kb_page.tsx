@@ -21,7 +21,7 @@ function baseName(path: string): string {
 }
 
 /**
- * 知识库管理页：设置页里的子页（由 NavigationLink 推进来，所以自己不带导航栈）。
+ * 知识库管理页：设置页里的子页（由设置页用 path 路由推进来，见 nav_route.ts，所以自己不带导航栈）。
  * 三种放资料的方式：手动丢进「知识库」文件夹、从「文件」App 上传、挂一个外部文件夹（只读索引）。
  */
 export function KbPage({ onChanged = () => {} }: Props) {

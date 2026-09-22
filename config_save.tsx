@@ -1,4 +1,5 @@
 import { Button } from "scripting"
+import { popRoute } from "./nav_route"
 
 /**
  * 子页右上角的「保存」。
@@ -10,6 +11,10 @@ import { Button } from "scripting"
  *
  * 登记进来的是设置页**每次渲染都会更新**的那份闭包 ⇒ 子页存下的永远是最新草稿，
  * 不会出现「刚敲完一个字就点保存，结果少了这个字」。
+ *
+ * 写盘成功后**自动返回上一级**（子页存完就退回上一层，符合 iOS 习惯）；
+ * 设置页自己那个「保存」是写盘后关掉整个设置页，在 config_page.tsx 里单独处理。
+ * 返回上一级只能靠 path 导航（原因见 nav_route.ts）。
  */
 
 type Saver = () => boolean
@@ -21,17 +26,15 @@ export function registerConfigSaver(fn: Saver | null) {
   saver = fn
 }
 
-/**
- * 子页里的「保存」：写盘成功后**留在原页**接着改，只弹一句确认。
- * （设置页自己那个「保存」是写盘后关掉设置页；两者共用同一份校验逻辑。）
- */
+/** 子页里的「保存」：写盘成功后返回上一级。 */
 export function saveConfigHere() {
   if (!saver) return
-  if (saver()) {
-    Dialog.alert({
-      title: "已保存",
-      message: "设置已经写进配置，聊天和工具立刻按新配置走。\n\n可以接着改，也可以下拉收起设置页。",
-    })
+  // 校验没过：persist() 自己弹过窗了，留在原页让用户改。
+  if (!saver()) return
+  // 存下了，退回上一层（设置页根上的「保存」不在这里，由设置页自己收起 sheet）。
+  if (!popRoute()) {
+    // 兜底：这一页不是被设置页推出来的（比如单独预览 / 单独跑），没法返回，只提示一句。
+    Dialog.alert({ title: "已保存", message: "设置已经写进配置，聊天和工具立刻按新配置走。" })
   }
 }
 

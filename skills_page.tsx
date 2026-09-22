@@ -1,5 +1,5 @@
 import {
-  Button, Form, HStack, NavigationLink, SecureField, Section, Text, TextField, Toggle, VStack, useEffect, useState,
+  Button, Form, HStack, Image, SecureField, Section, Text, TextField, Toggle, VStack, useEffect, useState,
 } from "scripting"
 import {
   SKILL_DONE, SKILL_INBOX, SkillMeta, deleteSkill, importSkills, listSkills, readSkill,
@@ -8,6 +8,7 @@ import {
 import { loadConfig } from "./agent_store"
 import { importSkillFromRepo } from "./repo_import"
 import { saveToolbar } from "./config_save"
+import { pushRoute, registerRoute } from "./nav_route"
 
 /** 搜索匹配：技能名 / 描述，大小写不敏感。 */
 function matchesSkill(s: SkillMeta, query: string): boolean {
@@ -22,7 +23,7 @@ interface Props {
 }
 
 /**
- * 技能管理页：设置页里的子页（由 NavigationLink 推进来，所以自己不带导航栈）。
+ * 技能管理页：设置页里的子页（由设置页用 path 路由推进来，见 nav_route.ts，所以自己不带导航栈）。
  * 上面搜索框 + 技能列表，点一条进详情页看完整说明 / 启停 / 删除；导入方式都收在列表下面。
  */
 export function SkillsPage({ onChanged = () => {} }: Props) {
@@ -128,6 +129,22 @@ export function SkillsPage({ onChanged = () => {} }: Props) {
     }
   }
 
+  // 详情页的路由：path 里出现 "skill:<id>" 就造这一条的详情页。
+  registerRoute("skill:", (id) => {
+    const s = skills.find((x) => x.id === id)
+    if (!s) return null
+    return (
+      <SkillDetail
+        meta={s}
+        onChanged={onChanged}
+        onDeleted={() => {
+          refresh()
+          onChanged()
+        }}
+      />
+    )
+  })
+
   const promptSize = skillsPrompt()?.length ?? 0
   const enabledCount = skills.filter((s) => s.enabled).length
   const shown = skills.filter((s) => matchesSkill(s, query))
@@ -159,18 +176,12 @@ export function SkillsPage({ onChanged = () => {} }: Props) {
             <Text foregroundStyle="secondaryLabel">{`没有名字或描述里带「${query.trim()}」的技能。`}</Text>
           ) : (
             shown.map((s) => (
-              <NavigationLink
+              <HStack
                 key={s.id}
-                destination={
-                  <SkillDetail
-                    meta={s}
-                    onChanged={onChanged}
-                    onDeleted={() => {
-                      refresh()
-                      onChanged()
-                    }}
-                  />
-                }
+                spacing={8}
+                frame={{ maxWidth: "infinity", alignment: "leading" }}
+                contentShape="rect"
+                onTapGesture={() => pushRoute("skill:" + s.id)}
               >
                 <VStack alignment="leading" spacing={3} frame={{ maxWidth: "infinity", alignment: "leading" }}>
                   <HStack spacing={6}>
@@ -187,7 +198,8 @@ export function SkillsPage({ onChanged = () => {} }: Props) {
                     {s.description || "（没有写描述）"}
                   </Text>
                 </VStack>
-              </NavigationLink>
+                <Image systemName="chevron.right" font="footnote" foregroundStyle="tertiaryLabel" />
+              </HStack>
             ))
           )}
         </Section>

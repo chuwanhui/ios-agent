@@ -1,6 +1,6 @@
 import {
-  Button, Form, HStack, Image, NavigationLink, NavigationStack, Picker, Section, SecureField,
-  Spacer, Text, TextField, Toggle, VStack, useEffect, useState,
+  Button, Form, HStack, Image, NavigationDestination, NavigationStack, Picker, Section, SecureField,
+  Spacer, Text, TextField, Toggle, VStack, useEffect, useObservable, useState,
 } from "scripting"
 import {
   AgentConfig, DEFAULT_SYSTEM_PROMPT, McpServer, ModelProvider, loadConfig, makeMcpServer, saveConfig,
@@ -15,6 +15,7 @@ import { SkillsPage } from "./skills_page"
 import { FieldRow, ToolRow, ToolsPage, toAgentTools, toToolRow } from "./tools_page"
 import { McpPage } from "./mcp_page"
 import { registerConfigSaver } from "./config_save"
+import { buildRoute, popRoute, pushRoute, registerNavPath, registerRoute } from "./nav_route"
 import {
   AVATAR_PATH, Avatar, PENDING_AVATAR_PATH, chooseAvatarFromPhotos, commitAvatar, discardAvatar,
 } from "./avatar"
@@ -102,30 +103,49 @@ function toFormState(cfg: AgentConfig): FormState {
   }
 }
 
-/** 设置页里的入口行：图标 + 标题 + 副标题，点进去是子页（右侧箭头由 NavigationLink 自带）。 */
-export function NavRow(props: { icon: string; title: string; detail: string; destination: any }) {
+/**
+ * 设置页里的入口行：图标 + 标题 + 副标题，点一下进子页（右侧箭头自己画）。
+ *
+ * 这里不用 NavigationLink 了：脚本没有编程式「返回上一级」的 API，只能让整个导航栈走
+ * path 导航（见 nav_route.ts），而 path 只能由「点一下 → 往末尾加一条 id」来推进。
+ */
+export function NavRow(props: { icon: string; title: string; detail: string; route: string }) {
   return (
-    <NavigationLink destination={props.destination}>
-      <HStack spacing={12} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-        <Image
-          systemName={props.icon}
-          foregroundStyle="secondaryLabel"
-          frame={{ width: 26, alignment: "center" }}
-        />
-        <VStack
-          alignment="leading"
-          spacing={2}
-          frame={{ maxWidth: "infinity", alignment: "leading" }}
-        >
-          <Text foregroundStyle="label">{props.title}</Text>
-          {props.detail ? (
-            <Text font="footnote" foregroundStyle="secondaryLabel">
-              {props.detail}
-            </Text>
-          ) : null}
-        </VStack>
-      </HStack>
-    </NavigationLink>
+    <HStack
+      spacing={12}
+      frame={{ maxWidth: "infinity", alignment: "leading" }}
+      contentShape="rect"
+      onTapGesture={() => pushRoute(props.route)}
+    >
+      <Image
+        systemName={props.icon}
+        foregroundStyle="secondaryLabel"
+        frame={{ width: 26, alignment: "center" }}
+      />
+      <VStack
+        alignment="leading"
+        spacing={2}
+        frame={{ maxWidth: "infinity", alignment: "leading" }}
+      >
+        <Text foregroundStyle="label">{props.title}</Text>
+        {props.detail ? (
+          <Text font="footnote" foregroundStyle="secondaryLabel">
+            {props.detail}
+          </Text>
+        ) : null}
+      </VStack>
+      <Image systemName="chevron.right" font="footnote" foregroundStyle="tertiaryLabel" />
+    </HStack>
+  )
+}
+
+/** path 里出现了一个没人登记的 id（正常不会发生）：给个能退回上一级的提示。 */
+function RouteMissing({ route }: { route: string }) {
+  return (
+    <VStack spacing={12} navigationTitle="打不开这一页">
+      <Text foregroundStyle="secondaryLabel">{`没有登记的路由「${route}」。`}</Text>
+      <Button title="返回上一级" action={() => popRoute()} />
+    </VStack>
   )
 }
 
@@ -207,6 +227,37 @@ export function ConfigPage({ onClose = () => {} }: Props) {
     state.mcpServers.length > 0
       ? `${state.mcpServers.length} 台服务器 · 启用 ${state.mcpServers.filter((m) => m.enabled && (m.url ?? "").trim()).length} 台`
       : "还没有，可以粘贴 JSON 导入"
+
+  // —— 导航 ——
+
+  /**
+   * 设置页里的所有跳转都走这一个 path：进下一层 = 末尾加一条 id，返回上一级 = 去掉末尾那条
+   * （脚本没有别的编程式返回手段，原因见 nav_route.ts）。
+   *
+   * path 里的 id 由两处登记：本页登记 5 个一级入口，各子页登记自己下一层的详情页。
+   * navigationDestination 的处理器只在导航栈根视图生效（真机验证过），所以只能集中在这里查表。
+   */
+  const navPath = useObservable<string[]>([])
+  registerNavPath(navPath)
+  useEffect(() => () => registerNavPath(null), [])
+
+  // 一级入口的路由工厂：写在渲染里，保证闭包拿到的是本页最新的 state。
+  registerRoute("models", () => (
+    <ModelsPage
+      rows={state.providers}
+      activeId={state.activeProviderId}
+      onChange={(rows) => patch({ providers: rows })}
+      onActiveChange={(id) => patch({ activeProviderId: id })}
+    />
+  ))
+  registerRoute("tools", () => (
+    <ToolsPage rows={state.tools} onChange={(rows) => patch({ tools: rows })} />
+  ))
+  registerRoute("mcp", () => (
+    <McpPage servers={state.mcpServers} onChange={(servers) => patch({ mcpServers: servers })} />
+  ))
+  registerRoute("kb", () => <KbPage onChanged={() => setTick(Date.now())} />)
+  registerRoute("skills", () => <SkillsPage onChanged={() => setTick(Date.now())} />)
 
   // —— 头像 ——
 
@@ -403,7 +454,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
   useEffect(() => () => registerConfigSaver(null), [])
 
   return (
-    <NavigationStack>
+    <NavigationStack path={navPath}>
       <VStack
         navigationTitle="设置"
         navigationBarTitleDisplayMode="inline"
@@ -411,6 +462,11 @@ export function ConfigPage({ onClose = () => {} }: Props) {
           topBarLeading: <Button title="取消" action={cancel} />,
           topBarTrailing: <Button title="保存" action={save} fontWeight="semibold" />,
         }}
+        navigationDestination={
+          <NavigationDestination>
+            {(page) => buildRoute(page) ?? <RouteMissing route={page} />}
+          </NavigationDestination>
+        }
       >
         <Form>
           <Section title="角色">
@@ -454,14 +510,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
                   ? `${providerLabel(activeRow)} · ${providerSubtitle(activeRow)}`
                   : "还没有，进去加一家"
               }
-              destination={
-                <ModelsPage
-                  rows={state.providers}
-                  activeId={state.activeProviderId}
-                  onChange={(rows) => patch({ providers: rows })}
-                  onActiveChange={(id) => patch({ activeProviderId: id })}
-                />
-              }
+              route="models"
             />
             {state.providers.length > 0 ? (
               <Text font="footnote" foregroundStyle="secondaryLabel">
@@ -540,29 +589,19 @@ export function ConfigPage({ onClose = () => {} }: Props) {
 
           <Section
             header={<Text>工具</Text>}
-            footer={<Text>两个子页右上角都有「保存」，在那里改完就地点一下，也能行。</Text>}
+            footer={<Text>两个子页右上角都有「保存」，在那里存完会自动退回这一层。</Text>}
           >
             <NavRow
               icon="bolt.fill"
               title="本地快捷指令工具"
               detail={toolDetail}
-              destination={
-                <ToolsPage
-                  rows={state.tools}
-                  onChange={(rows) => patch({ tools: rows })}
-                />
-              }
+              route="tools"
             />
             <NavRow
               icon="server.rack"
               title="MCP 服务器"
               detail={mcpDetail}
-              destination={
-                <McpPage
-                  servers={state.mcpServers}
-                  onChange={(servers) => patch({ mcpServers: servers })}
-                />
-              }
+              route="mcp"
             />
           </Section>
 
@@ -592,7 +631,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
                   ? `已导入 ${kbStat.docs} 份资料 · ${kbStat.chunks} 个片段`
                   : "还没有资料，可以上传文件或指定文件夹"
               }
-              destination={<KbPage onChanged={() => setTick(Date.now())} />}
+              route="kb"
             />
           </Section>
 
@@ -656,7 +695,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
                   ? `${skillStat.total} 个技能 · 启用 ${skillStat.enabled} 个`
                   : "还没有技能，可以上传 zip 或从 git 仓库导入"
               }
-              destination={<SkillsPage onChanged={() => setTick(Date.now())} />}
+              route="skills"
             />
           </Section>
         </Form>

@@ -1,9 +1,10 @@
 import {
-  Button, Form, HStack, NavigationLink, Section, SecureField, Text, TextField, Toggle, VStack, useState,
+  Button, Form, HStack, Image, Section, SecureField, Text, TextField, Toggle, VStack, useState,
 } from "scripting"
 import { McpServer, makeMcpServer, mcpServersToJson, parseMcpServersJson } from "./agent_store"
 import { listMcpTools } from "./mcp_client"
 import { saveToolbar } from "./config_save"
+import { pushRoute, registerRoute } from "./nav_route"
 
 /** 从地址里抠出主机名，列表里当一行摘要用。 */
 function hostOf(url: string): string {
@@ -46,7 +47,7 @@ interface Props {
 
 /**
  * 「MCP 服务器」子页：上面搜索框，中间服务器列表，点一台进详情页配。
- * 由设置页用 NavigationLink 推进来，所以这里**不用**再套 NavigationStack。
+ * 由设置页用 path 路由推进来（见 nav_route.ts），所以这里**不用**再套 NavigationStack。
  */
 export function McpPage({ servers, onChange }: Props) {
   const [draft, setDraft] = useState<McpServer[]>(servers.map((s) => ({ ...s })))
@@ -106,7 +107,7 @@ export function McpPage({ servers, onChange }: Props) {
     if (res.skipped.length > 0) {
       lines.push("未导入：\n" + res.skipped.map((s) => "· " + s).join("\n"))
     }
-    if (fresh.length > 0) lines.push("点右上角「保存」就会生效（也可以回设置页保存）。")
+    if (fresh.length > 0) lines.push("点右上角「保存」就会生效，并退回这一层。")
     setNote(lines.join("\n\n"))
   }
 
@@ -118,6 +119,21 @@ export function McpPage({ servers, onChange }: Props) {
       setNote("写剪贴板失败：" + (e?.message ?? String(e)))
     }
   }
+
+  // 详情页的路由：path 里出现 "mcp:<id>" 就造这一台的详情页。
+  registerRoute("mcp:", (id) => {
+    const m = draft.find((x) => x.id === id)
+    if (!m) return null
+    const i = draft.indexOf(m)
+    return (
+      <McpDetail
+        index={i}
+        initial={m}
+        onChange={(p) => update(m.id, p)}
+        onDelete={() => removeServer(m.id)}
+      />
+    )
+  })
 
   const indexed = draft.map((m, i) => ({ m, i }))
   const shown = indexed.filter((x) => matchesServer(x.m, query))
@@ -138,24 +154,20 @@ export function McpPage({ servers, onChange }: Props) {
       <Form>
         <Section
           header={<Text>{draft.length > 0 ? `服务器 ${draft.length} 台` : "MCP 服务器"}</Text>}
-          footer={<Text>点一台进去才是它的详细配置。改完点右上角「保存」就会生效。</Text>}
+          footer={<Text>点一台进去才是它的详细配置。改完点右上角「保存」就会生效，并退回这一层。</Text>}
         >
           {draft.length === 0 ? (
             <Text foregroundStyle="secondaryLabel">还没有 MCP 服务器，用下面的「添加服务器」加一台。</Text>
           ) : shown.length === 0 ? (
             <Text foregroundStyle="secondaryLabel">{`没有名字或地址里带「${query.trim()}」的服务器。`}</Text>
           ) : (
-            shown.map(({ m, i }) => (
-              <NavigationLink
+            shown.map(({ m }) => (
+              <HStack
                 key={m.id}
-                destination={
-                  <McpDetail
-                    index={i}
-                    initial={m}
-                    onChange={(p) => update(m.id, p)}
-                    onDelete={() => removeServer(m.id)}
-                  />
-                }
+                spacing={8}
+                frame={{ maxWidth: "infinity", alignment: "leading" }}
+                contentShape="rect"
+                onTapGesture={() => pushRoute("mcp:" + m.id)}
               >
                 <VStack alignment="leading" spacing={3} frame={{ maxWidth: "infinity", alignment: "leading" }}>
                   <HStack spacing={6}>
@@ -172,7 +184,8 @@ export function McpPage({ servers, onChange }: Props) {
                     {serverSubtitle(m)}
                   </Text>
                 </VStack>
-              </NavigationLink>
+                <Image systemName="chevron.right" font="footnote" foregroundStyle="tertiaryLabel" />
+              </HStack>
             ))
           )}
         </Section>
@@ -190,7 +203,7 @@ export function McpPage({ servers, onChange }: Props) {
               <Text>
                 不想每次都去连，可以在详情页先把「启用」关掉；工具清单会缓存 5 分钟，改完配置点「测试连接」会强制重新拉一次。
               </Text>
-              <Text>改完点右上角「保存」就会生效（也可以回设置页保存）。</Text>
+              <Text>改完点右上角「保存」就会生效，并退回这一层（也可以回设置页保存）。</Text>
             </VStack>
           }
         >

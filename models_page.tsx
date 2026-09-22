@@ -4,7 +4,6 @@ import {
   Form,
   HStack,
   Image,
-  NavigationLink,
   Picker,
   Section,
   SecureField,
@@ -19,6 +18,7 @@ import { ModelProvider, makeProvider, suggestProviderName } from "./agent_store"
 import { queryBalance } from "./balance_client"
 import { FieldRow } from "./tools_page"
 import { saveToolbar } from "./config_save"
+import { pushRoute, registerRoute } from "./nav_route"
 
 // ———————————————————————— 小工具 ————————————————————————
 
@@ -162,25 +162,29 @@ function matchesProvider(p: ModelProvider, query: string): boolean {
 }
 
 /** 列表行的「名字 + 摘要」，点进去才是详情；当前在用的那家带个 ✓。 */
-function ProviderListRow(props: { row: ModelProvider; active: boolean; destination: any }) {
+function ProviderListRow(props: { row: ModelProvider; active: boolean; route: string }) {
   return (
-    <NavigationLink destination={props.destination}>
-      <HStack spacing={8} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-        <VStack
-          alignment="leading"
-          spacing={3}
-          frame={{ maxWidth: "infinity", alignment: "leading" }}
-        >
-          <Text fontWeight="semibold" foregroundStyle="label">
-            {providerLabel(props.row)}
-          </Text>
-          <Text font="footnote" foregroundStyle="secondaryLabel">
-            {providerSubtitle(props.row)}
-          </Text>
-        </VStack>
-        {props.active ? <Image systemName="checkmark" foregroundStyle="secondaryLabel" /> : null}
-      </HStack>
-    </NavigationLink>
+    <HStack
+      spacing={8}
+      frame={{ maxWidth: "infinity", alignment: "leading" }}
+      contentShape="rect"
+      onTapGesture={() => pushRoute(props.route)}
+    >
+      <VStack
+        alignment="leading"
+        spacing={3}
+        frame={{ maxWidth: "infinity", alignment: "leading" }}
+      >
+        <Text fontWeight="semibold" foregroundStyle="label">
+          {providerLabel(props.row)}
+        </Text>
+        <Text font="footnote" foregroundStyle="secondaryLabel">
+          {providerSubtitle(props.row)}
+        </Text>
+      </VStack>
+      {props.active ? <Image systemName="checkmark" foregroundStyle="secondaryLabel" /> : null}
+      <Image systemName="chevron.right" font="footnote" foregroundStyle="tertiaryLabel" />
+    </HStack>
   )
 }
 
@@ -199,7 +203,7 @@ interface Props {
 
 /**
  * 「模型供应商」子页：上面搜索框，中间供应商列表，点一条进详情页配。
- * 由设置页用 NavigationLink 推进来，所以这里**不用**再套 NavigationStack。
+ * 由设置页用 path 路由推进来（见 nav_route.ts），所以这里**不用**再套 NavigationStack。
  */
 export function ModelsPage({ rows, activeId, onChange, onActiveChange }: Props) {
   const [draft, setDraft] = useState<ModelProvider[]>(() => toProviderRows(rows))
@@ -257,6 +261,24 @@ export function ModelsPage({ rows, activeId, onChange, onActiveChange }: Props) 
     })()
   }, [])
 
+  // 详情页的路由：path 里出现 "provider:<id>" 就造这一家的详情页。写在渲染里，
+  // 保证 update / remove 用的下标和当前草稿一致。
+  registerRoute("provider:", (id) => {
+    const i = draft.findIndex((r) => r.id === id)
+    const r = draft[i]
+    if (!r) return null
+    return (
+      <ProviderDetail
+        index={i}
+        initial={r}
+        active={r.id === activeId}
+        onActivate={() => onActiveChange(r.id)}
+        onChange={(q) => update(i, q)}
+        onDelete={() => remove(i)}
+      />
+    )
+  })
+
   const indexed = draft.map((p, i) => ({ p, i }))
   const shown = indexed.filter((x) => matchesProvider(x.p, query))
 
@@ -280,7 +302,7 @@ export function ModelsPage({ rows, activeId, onChange, onActiveChange }: Props) 
               <Text>
                 每家一套自己的接口地址、API Key 和模型，互不影响；带 ✓ 的是聊天正在用的那家（进详情页可以换）。
               </Text>
-              <Text>改完点右上角「保存」就写进配置（回设置页保存也一样）。</Text>
+              <Text>改完点右上角「保存」就写进配置，并退回设置页（回设置页保存也一样）。</Text>
               {note ? <Text>{note}</Text> : null}
             </VStack>
           }
@@ -292,21 +314,12 @@ export function ModelsPage({ rows, activeId, onChange, onActiveChange }: Props) 
           ) : shown.length === 0 ? (
             <Text foregroundStyle="secondaryLabel">{`没有名字里带「${query.trim()}」的供应商。`}</Text>
           ) : (
-            shown.map(({ p, i }) => (
+            shown.map(({ p }) => (
               <ProviderListRow
                 key={p.id}
                 row={p}
                 active={p.id === activeId}
-                destination={
-                  <ProviderDetail
-                    index={i}
-                    initial={p}
-                    active={p.id === activeId}
-                    onActivate={() => onActiveChange(p.id)}
-                    onChange={(q) => update(i, q)}
-                    onDelete={() => remove(i)}
-                  />
-                }
+                route={"provider:" + p.id}
               />
             ))
           )}
@@ -337,7 +350,7 @@ interface DetailProps {
 
 /**
  * 一家供应商的详情页：地址 / Key / 请求路径 / 拉模型 / 余额 / 设为当前使用 / 删除。
- * 用 NavigationLink 从列表推进来，所以不用再套 NavigationStack。
+ * 现在由「供应商列表」页用 path 路由推进来（见 nav_route.ts），所以不用再套 NavigationStack。
  */
 export function ProviderDetail({ index, initial, active, onActivate, onChange, onDelete }: DetailProps) {
   const [p, setP] = useState<ModelProvider>(() => ({
