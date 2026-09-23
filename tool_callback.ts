@@ -166,13 +166,10 @@ function findStep(
   return null
 }
 
-/** 回传给模型看的那条文本（落进会话当隐藏上下文，聊天界面不显示）。 */
+/** 回传给模型看的那条文本（聊天界面显示为「工具回复」卡片）。 */
 export function callbackText(shortcutName: string, result: string): string {
   const who = shortcutName ? `快捷指令「${shortcutName}」` : "快捷指令"
-  return (
-    `【工具回传】${who}返回：\n` + result +
-    "\n\n（这是刚才调用工具的回传结果，结合它继续回答；不要再说拿不到结果，也不要重复调用。）"
-  )
+  return `${who}返回：\n${result}\n\n（这是工具的回传结果，结合它继续回答；不要再说拿不到结果，也不要重复调用。）`
 }
 
 /**

@@ -11,7 +11,7 @@ import { ConfigPage } from "./config_page"
 import { MountPage } from "./mount_page"
 import { DRAWER_WIDTH, Sidebar } from "./sidebar"
 import { AvatarSpec } from "./avatar"
-import { AssistantMessage, Bubble, EmptyState, LiveThinking } from "./message_bubble"
+import { AssistantMessage, Bubble, EmptyState, LiveThinking, ToolReplyCard } from "./message_bubble"
 import { ChatInputBar, MountStrip } from "./chat_input"
 import { useCallbackAutoJob } from "./callback"
 
@@ -30,19 +30,19 @@ export function ChatPage() {
   const [liveText, setLiveText] = useState("")
 
   // 快捷指令回传：两条入口（冷启动 URL / 被唤起 onResume）统一接在这里，
-  // 解析出文本就刷新 config/store，等不忙了再 hidden 续跑。
+  // 解析出文本就刷新 config/store，等不忙了再发「工具回复」消息（toolReply 标记）。
   useCallbackAutoJob({
     onConsumed: () => {
       setCfg(loadConfig())
       setStore(loadStore())
     },
-    onFire: (text) => void send(text, { hidden: true }),
+    onFire: (text) => void send(text, { toolReply: true }),
     busy,
   })
 
   const current = store.sessions.find((s) => s.id === store.currentId) ?? null
   const messages = current?.messages ?? []
-  /** 界面上真正画出来的消息：hidden 的那些（工具回传）只进上下文，不上屏。 */
+  /** 界面上画出来的消息：hidden 的不显示，toolReply 作为特殊卡片显示。 */
   const visible = messages.filter((m) => !m.hidden)
 
   function apply(next: SessionStore) {
@@ -83,8 +83,12 @@ export function ChatPage() {
     apply(withCurrentSession(removeSession(store, id)).store)
   }
 
-  /** hidden：这条输入不在聊天界面显示，只作为上下文喂给模型（工具回传续跑走这里）。 */
-  async function send(text: string, opts?: { hidden?: boolean }) {
+  /**
+   * 发消息。
+   * opts.toolReply：快捷指令回传的消息，显示为「工具回复」卡片（不是 hidden）。
+   * opts.hidden：完全隐藏的消息（目前未使用，留作备用）。
+   */
+  async function send(text: string, opts?: { hidden?: boolean; toolReply?: boolean }) {
     const trimmed = text.trim()
     if (!trimmed || busy) return
 
@@ -102,7 +106,12 @@ export function ChatPage() {
 
     setBusy(true)
     setInput("")
-    const userMsg: ChatMessage = { role: "user", content: trimmed, hidden: opts?.hidden ? true : undefined }
+    const userMsg: ChatMessage = {
+      role: "user",
+      content: trimmed,
+      hidden: opts?.hidden ? true : undefined,
+      toolReply: opts?.toolReply ? true : undefined,
+    }
     apply(upsertSession(store, { ...base, messages: [...base.messages, userMsg], updatedAt: Date.now() }))
     setLiveReasoning("")
     setLiveSteps([])
@@ -169,7 +178,7 @@ export function ChatPage() {
           }
           if (Date.now() - lastFlush >= 60) flush()
         },
-      }, { hiddenInput: opts?.hidden })
+      }, { hiddenInput: opts?.hidden, toolReply: opts?.toolReply })
       flush()
       const capped = capMessages(newHistory, cfg.maxHistory)
       apply(
@@ -185,7 +194,7 @@ export function ChatPage() {
       const errMsg = "出错：" + (e?.message ?? String(e))
       const failed: ChatMessage[] = [
         ...base.messages,
-        { role: "user", content: trimmed, hidden: opts?.hidden ? true : undefined },
+        { role: "user", content: trimmed, hidden: opts?.hidden ? true : undefined, toolReply: opts?.toolReply ? true : undefined },
         { role: "assistant", content: errMsg },
       ]
       apply(
@@ -257,7 +266,9 @@ export function ChatPage() {
               <EmptyState name={cfg.agentName || "智能体"} avatar={avatar} />
             ) : null}
             {visible.map((m, i) =>
-              m.role === "user" ? (
+              m.toolReply ? (
+                <ToolReplyCard key={"m" + i} message={m} />
+              ) : m.role === "user" ? (
                 <Bubble key={"m" + i} message={m} avatar={avatar} />
               ) : (
                 <AssistantMessage

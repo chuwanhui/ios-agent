@@ -239,9 +239,40 @@ function buildMessages(
     msgs.push({ role: "system", content: sys.join("\n\n") })
   }
   for (const m of history) {
+    // 工具回传消息：发给模型当作用户输入处理
+    if (m.toolReply) {
+      msgs.push({ role: "user", content: m.content })
+      continue
+    }
     // hidden 的消息（工具回传）照常发给模型，只是聊天界面不显示
-    if (m.role === "assistant" && m.toolNotes) {
-      msgs.push({ role: m.role, content: (m.content ?? "") + "\n\n" + m.toolNotes })
+    if (m.role === "assistant") {
+      const content = m.toolNotes
+        ? (m.content ?? "") + "\n\n" + m.toolNotes
+        : (m.content ?? "")
+      // 有工具调用记录 → 还原成 tool_calls + role:"tool" 结构
+      const steps = m.steps ?? []
+      if (steps.length > 0) {
+        const toolCalls: any[] = []
+        for (let i = 0; i < steps.length; i++) {
+          const s = steps[i]
+          const id = "h_" + i
+          toolCalls.push({
+            id,
+            type: "function",
+            function: { name: s.name, arguments: s.args || "{}" },
+          })
+        }
+        msgs.push({ role: "assistant", content, tool_calls: toolCalls })
+        for (let i = 0; i < steps.length; i++) {
+          msgs.push({
+            role: "tool",
+            tool_call_id: "h_" + i,
+            content: steps[i].result || "",
+          })
+        }
+      } else {
+        msgs.push({ role: m.role, content })
+      }
     } else {
       msgs.push({ role: m.role, content: m.content })
     }
@@ -641,7 +672,8 @@ export async function runAgent(
   history: ChatMessage[],
   hooksArg?: HooksArg,
   /** hiddenInput：这次输入不画在聊天界面（快捷指令回传续跑那一轮用）。 */
-  opts?: { hiddenInput?: boolean },
+  /** toolReply：这次输入显示为「工具回复」卡片（快捷指令回传新方式）。 */
+  opts?: { hiddenInput?: boolean; toolReply?: boolean },
 ): Promise<{ reply: string; newHistory: ChatMessage[]; steps: ToolStep[]; reasoning: string }> {
   const hooks = normalizeHooks(hooksArg)
   const messages = buildMessages(cfg, history, userText)
@@ -755,6 +787,7 @@ export async function runAgent(
 
   const userMsg: ChatMessage = { role: "user", content: userText }
   if (opts?.hiddenInput) userMsg.hidden = true
+  if (opts?.toolReply) userMsg.toolReply = true
   const newHistory: ChatMessage[] = [
     ...history,
     userMsg,

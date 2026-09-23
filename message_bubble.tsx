@@ -226,6 +226,33 @@ export function Bubble({ message, avatar }: { message: ChatMessage; avatar: Avat
   )
 }
 
+/** 工具回传卡片：快捷指令异步返回的结果，用特殊样式标注「工具回复」。 */
+export function ToolReplyCard({ message }: { message: ChatMessage }) {
+  return (
+    <HStack
+      spacing={8}
+      alignment="bottom"
+      padding={{ horizontal: 12, vertical: 4 }}
+      frame={{ maxWidth: "infinity" }}
+    >
+      <Spacer />
+      <VStack
+        padding={{ horizontal: 14, vertical: 10 }}
+        background={CARD_FILL}
+        clipShape={{ type: "rect", cornerRadius: 14 }}
+        frame={{ maxWidth: 280 }}
+        spacing={4}
+      >
+        <HStack spacing={5}>
+          <Image systemName="arrowshape.turn.up.left.fill" font="caption2" foregroundStyle="systemGreen" />
+          <Text font="caption2" fontWeight="semibold" foregroundStyle="systemGreen">工具回复</Text>
+        </HStack>
+        <Text font="subheadline" foregroundStyle="label">{message.content}</Text>
+      </VStack>
+    </HStack>
+  )
+}
+
 /** 助手的消息：过程卡片在气泡上方，共用左侧一个头像。 */
 export function AssistantMessage({
   message, avatar, showSteps, defaultOpen = false, stepDefaultOpen = false,

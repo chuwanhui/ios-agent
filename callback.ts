@@ -7,7 +7,7 @@ import { loadConfig, loadStore } from "./agent_store"
  * 两条都要接。这里统一成「解析 → 刷新 config/store → 排队续跑」的 hook：
  *   - 解析出文本（handleCallback）就触发 onConsumed（父级刷新 cfg/store）；
  *   - 续跑不能忙时发（send 忙时直接返回会吞掉），等不忙了才 onFire。
- * 真正发出去的那一轮是 hidden 的（只作为上下文喂给模型，不上屏）。
+ * 真正发出去的那一轮是 toolReply 标记的（聊天界面显示为「工具回复」卡片）。
  */
 export function useCallbackAutoJob({
   onConsumed, onFire, busy,
