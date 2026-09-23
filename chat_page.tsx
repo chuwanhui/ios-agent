@@ -15,6 +15,11 @@ import { AssistantMessage, Bubble, EmptyState, LiveThinking, ToolReplyCard } fro
 import { ChatInputBar, MountStrip } from "./chat_input"
 import { useCallbackAutoJob } from "./callback"
 
+// 防止快捷指令回传链式触发：同一时间只允许一条 toolReply 在跑。
+// 一条 toolReply 里的 runAgent 又会调同一个工具 → 新的 callback → 在 busy=false 后
+// 立刻又触发下一条 toolReply → 不拦就无限链下去。
+let toolReplyInProgress = false
+
 export function ChatPage() {
   const dismiss = Navigation.useDismiss()
   const [cfg, setCfg] = useState<AgentConfig>(() => loadConfig())
@@ -91,6 +96,12 @@ export function ChatPage() {
   async function send(text: string, opts?: { hidden?: boolean; toolReply?: boolean }) {
     const trimmed = text.trim()
     if (!trimmed || busy) return
+
+    // 防止工具回传链式触发：上一条 toolReply 还没跑完，跳过新的回传。
+    if (opts?.toolReply) {
+      if (toolReplyInProgress) return
+      toolReplyInProgress = true
+    }
 
     if (!cfg.apiKey) {
       Dialog.alert({ message: "还没配置：点右上角齿轮填一下 API Key" })
@@ -206,6 +217,7 @@ export function ChatPage() {
         }),
       )
     } finally {
+      if (opts?.toolReply) toolReplyInProgress = false
       setBusy(false)
       setLiveReasoning("")
       setLiveSteps([])

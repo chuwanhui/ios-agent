@@ -125,7 +125,15 @@ function eachSsePayload(frame: string, fn: (payload: string) => void) {
 /**
  * 流式请求：边收边把增量回调出去，最后把分片拼回一条完整的 message。
  * 工具调用是分片下发的（id / name / arguments 拆在不同帧里），按 `index` 拼装。
+ *
+ * 超时机制：
+ *   - chunk 间最长等 STREAM_CHUNK_TIMEOUT（30 秒），超时就认为服务端挂了，结束读取；
+ *   - 整次流式传输不超过 STREAM_TOTAL_TIMEOUT（120 秒）,
+ *     防止服务端一直发碎片（实际上 DeepSeek 一次回答通常在 30 秒内完成）。
  */
+const STREAM_CHUNK_TIMEOUT = 30000
+const STREAM_TOTAL_TIMEOUT = 120000
+
 async function callDeepSeekStream(
   messages: LLMMessage[],
   cfg: AgentConfig,
@@ -187,8 +195,24 @@ async function callDeepSeekStream(
   if (reader) {
     const decoder = new TextDecoder()
     let buffer = ""
+    const tStart = Date.now()
     while (true) {
-      const chunk = await reader.read()
+      const elapsed = Date.now() - tStart
+      if (elapsed >= STREAM_TOTAL_TIMEOUT) {
+        try { reader.cancel?.() } catch {}
+        break
+      }
+      const chunkBudget = Math.min(STREAM_CHUNK_TIMEOUT, STREAM_TOTAL_TIMEOUT - elapsed)
+      let chunk: any = null
+      try {
+        chunk = await Promise.race([
+          reader.read(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("CHUNK_TIMEOUT")), chunkBudget)),
+        ])
+      } catch {
+        try { reader.cancel?.() } catch {}
+        break
+      }
       if (!chunk || chunk.done) break
       buffer += decoder.decode(chunk.value, { stream: true })
       let cut = buffer.indexOf("\n\n")
@@ -678,6 +702,8 @@ export async function runAgent(
   const hooks = normalizeHooks(hooksArg)
   const messages = buildMessages(cfg, history, userText)
   const maxRounds = Math.max(1, cfg.maxToolRounds || 3)
+  // 全局截止时间：单次 runAgent 最长不超过 3 分钟（防止任何环节挂死）
+  const deadline = Date.now() + 180_000
   // 工具清单在每轮对话开始时取一次（MCP 那边有 5 分钟缓存）。
   const { specs, routes } = await buildToolSpecs(cfg)
   const steps: ToolStep[] = []
@@ -749,7 +775,10 @@ export async function runAgent(
     return msg
   }
 
+  const calledSignatures = new Set<string>()
   for (let i = 0; i < maxRounds; i++) {
+    if (Date.now() > deadline) break
+
     const msg = await ask(specs)
     const toolCalls: any[] = msg.tool_calls ?? []
 
@@ -759,12 +788,23 @@ export async function runAgent(
       break
     }
 
+    // 同工具重复调用守卫：如果本轮所有工具调用都和之前完全一样，跳过直接要求文本回答。
+    const sigs = toolCalls.map((tc: any) => {
+      const name = tc?.function?.name ?? ""
+      const args = tc?.function?.arguments ?? "{}"
+      return `${name}:${args}`
+    })
+    const allRepeated = sigs.length > 0 && sigs.every((s: string) => calledSignatures.has(s))
+    if (allRepeated) break
+    sigs.forEach((s: string) => calledSignatures.add(s))
+
     messages.push({
       role: "assistant",
       content: msg.content ?? "",
       tool_calls: toolCalls,
     })
     for (const tc of toolCalls) {
+      if (Date.now() > deadline) break
       const { text, step } = await executeTool(tc, routes, hooks)
       steps.push(step)
       messages.push({ role: "tool", tool_call_id: tc.id, content: text })
@@ -772,8 +812,13 @@ export async function runAgent(
   }
 
   if (!resolved) {
-    const msg = await ask(null)
-    reply = msg.content ?? ""
+    if (Date.now() > deadline) {
+      reply = "执行超时，已自动中止。"
+      resolved = true
+    } else {
+      const msg = await ask(null)
+      reply = msg.content ?? ""
+    }
   }
 
   const reasoning = clip(reasonings.join("\n\n"), REASONING_CLIP)
