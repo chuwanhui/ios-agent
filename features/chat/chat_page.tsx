@@ -1,5 +1,5 @@
 import {
-  Button, Navigation, NavigationStack, ScrollView, Toolbar, ToolbarItem, VStack, ZStack, useEffect, useState,
+  Button, HStack, Image, Navigation, NavigationStack, ScrollView, Spacer, Text, Toolbar, ToolbarItem, VStack, ZStack, useEffect, useState,
 } from "scripting"
 import {
   AgentConfig, ChatMessage, SessionMounts, SessionStore, ToolStep, capMessages,
@@ -259,6 +259,23 @@ export function ChatPage() {
       >
         {/* 主内容 */}
         <VStack spacing={0} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
+        <HStack
+          spacing={10}
+          padding={{ horizontal: 16, top: 10, bottom: 8 }}
+          frame={{ maxWidth: "infinity" }}
+        >
+          <VStack spacing={2} alignment="leading">
+            <Text font="caption" fontWeight="semibold" foregroundStyle="secondaryLabel">当前对话</Text>
+            <Text font="title3" fontWeight="bold">{current?.title || "新对话"}</Text>
+          </VStack>
+          <Spacer />
+          <Button action={newSession} disabled={busy}>
+            <HStack spacing={5} padding={{ horizontal: 10, vertical: 7 }} background="tertiarySystemFill" clipShape="capsule">
+              <Image systemName="square.and.pencil" font="caption" />
+              <Text font="caption" fontWeight="semibold">新建</Text>
+            </HStack>
+          </Button>
+        </HStack>
         <ScrollView defaultScrollAnchor="bottom" scrollDismissesKeyboard="interactively">
             <VStack spacing={0} padding={{ top: 18, bottom: 20 }}>
             {visible.length === 0 ? (

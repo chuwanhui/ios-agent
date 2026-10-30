@@ -437,8 +437,21 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             {(page) => buildRoute(page) ?? <RouteMissing route={page} />}
           </NavigationDestination>
         }
-      >
+        >
         <Form>
+          <Section>
+            <HStack spacing={12} padding={{ vertical: 4 }} frame={{ maxWidth: "infinity" }}>
+              <Avatar spec={{ path: state.avatarPath }} size={44} />
+              <VStack alignment="leading" spacing={2} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+                <Text font="headline">{state.agentName.trim() || "小助"}</Text>
+                <Text font="footnote" foregroundStyle="secondaryLabel">
+                  {activeRow ? `当前模型：${providerLabel(activeRow)}` : "先连接一个模型，即可开始对话"}
+                </Text>
+              </VStack>
+              <Image systemName={activeRow ? "checkmark.circle.fill" : "exclamationmark.circle"} foregroundStyle="secondaryLabel" />
+            </HStack>
+          </Section>
+
           <Section title="个人化">
             <FieldRow label="助手名字">
               <TextField
