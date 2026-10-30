@@ -16,7 +16,7 @@ import {
 } from "scripting"
 import { ModelProvider, makeProvider, suggestProviderName } from "../../core/agent_store"
 import { queryBalance } from "./balance_client"
-import { FieldRow } from "./tools_page"
+import { FieldRow } from "../../shared/ui/form_field"
 import { saveToolbar } from "../../shared/ui/config_save"
 import { pushRoute, registerRoute } from "../../shared/ui/nav_route"
 

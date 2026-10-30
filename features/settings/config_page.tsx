@@ -12,7 +12,7 @@ import { ModelsPage, providerLabel, providerSubtitle, toProviders } from "./mode
 import { skillCounts } from "../skills/skills_store"
 import { KbPage } from "../knowledge/kb_page"
 import { SkillsPage } from "../skills/skills_page"
-import { ExecutorPage, FieldRow } from "./tools_page"
+import { FieldRow } from "../../shared/ui/form_field"
 import { McpPage } from "./mcp_page"
 import { registerConfigSaver } from "../../shared/ui/config_save"
 import { buildRoute, popRoute, pushRoute, registerNavPath, registerRoute } from "../../shared/ui/nav_route"
@@ -55,8 +55,6 @@ export interface FormState {
   thinking: ThinkingTier
   /** 聊天页是否展示 AI 思考 / 工具调用过程。 */
   showSteps: boolean
-  // 统一执行器（旧 tools 仅保留兼容，不再在设置中逐条配置）
-  executorShortcutName: string
   // MCP
   mcpServers: McpServer[]
   // 知识库 / 技能
@@ -85,7 +83,6 @@ function toFormState(cfg: AgentConfig): FormState {
     maxHistory: String(cfg.maxHistory),
     thinking: tierOf(cfg),
     showSteps: cfg.showSteps !== false,
-    executorShortcutName: cfg.executorShortcutName ?? "智能体执行器",
     mcpServers: (cfg.mcpServers ?? []).map((m) => ({ ...m })),
     kbEnabled: cfg.kbEnabled,
     skillsEnabled: cfg.skillsEnabled,
@@ -217,7 +214,6 @@ export function ConfigPage({ onClose = () => {} }: Props) {
   const skillStat = skillCounts()
 
   // 入口行的副标题
-  const toolDetail = state.executorShortcutName.trim() || "已关闭"
   const mcpDetail =
     state.mcpServers.length > 0
       ? `${state.mcpServers.length} 台服务器 · 启用 ${state.mcpServers.filter((m) => m.enabled && (m.url ?? "").trim()).length} 台`
@@ -235,12 +231,6 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       activeId={state.activeProviderId}
       onChange={(rows) => patch({ providers: rows })}
       onActiveChange={(id) => patch({ activeProviderId: id })}
-    />
-  ))
-  registerRoute("tools", () => (
-    <ExecutorPage
-      shortcutName={state.executorShortcutName}
-      onChange={(executorShortcutName) => patch({ executorShortcutName })}
     />
   ))
   registerRoute("mcp", () => (
@@ -400,7 +390,6 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       thinkingEnabled: state.thinking !== "off",
       reasoningEffort: state.thinking === "off" ? "" : state.thinking,
       showSteps: state.showSteps,
-      executorShortcutName: state.executorShortcutName.trim(),
       mcpServers,
       kbEnabled: state.kbEnabled,
       skillsEnabled: state.skillsEnabled,
@@ -561,13 +550,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             </Text>
           </Section>
 
-          <Section header={<Text>自动化</Text>} footer={<Text>执行器负责本机操作；MCP 用于连接远程服务。</Text>}>
-            <NavRow
-              icon="bolt.fill"
-              title="快捷指令执行器"
-              detail={toolDetail}
-              route="tools"
-            />
+          <Section header={<Text>远程工具</Text>} footer={<Text>MCP 用于连接远程服务。本机自动化由内置执行器直接处理。</Text>}>
             <NavRow
               icon="server.rack"
               title="MCP 服务器"

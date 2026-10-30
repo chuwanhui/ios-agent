@@ -102,15 +102,11 @@ export function MountPage({ cfg, mounts, onChange, onClose = () => {} }: Props) 
               </Text>
             }
           >
-            {!cfg.executorShortcutName.trim() ? (
-              <Text foregroundStyle="secondaryLabel">还没有设置执行器名称</Text>
-            ) : (
-              <Toggle
-                title={cfg.executorShortcutName}
-                value={eff.tools.indexOf("ios_executor") >= 0}
-                onChanged={() => set({ tools: flip(eff.tools, "ios_executor") })}
-              />
-            )}
+            <Toggle
+              title="允许本机自动化"
+              value={eff.tools.indexOf("ios_executor") >= 0}
+              onChanged={() => set({ tools: flip(eff.tools, "ios_executor") })}
+            />
           </Section>
 
           <Section
