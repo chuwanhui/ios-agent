@@ -1,6 +1,6 @@
 import { fetch } from "scripting"
 import {
-  AgentConfig, AgentTool, ChatMessage, McpServer, TokenUsage, ToolStep, toolDescription, toolParameters,
+  AgentConfig, AgentTool, ChatMessage, McpServer, TokenUsage, ToolStep, executorTool,
 } from "./agent_store"
 import { McpTool, callMcpTool, collectMcpTools } from "./mcp_client"
 import { formatKbHits, kbStats, searchKbHybrid } from "./kb_store"
@@ -428,7 +428,7 @@ export function mcpFunctionName(server: McpServer, toolName: string): string {
 
 /**
  * 合并各路工具，生成发给模型的 tools 数组，并记下函数名到执行目标的映射：
- *   - 快捷指令工具（单向触发；配了回传才有结果）
+ *   - 统一执行器快捷指令（按 action 分发，始终回传结果）
  *   - MCP 工具（远程 HTTP，有真返回值）
  *   - 内置的本地知识库检索（离线全文检索，有真返回值）
  *   - 内置的技能读取（渐进式披露，有真返回值）
@@ -454,13 +454,15 @@ async function buildToolSpecs(
     return name
   }
 
-  for (const t of cfg.tools ?? []) {
-    if (!t?.name) continue
-    const name = take(t.name)
-    routes.set(name, { kind: "shortcut", tool: t })
+  // 不再逐条暴露 cfg.tools：所有系统自动化统一通过一个执行器，快捷指令侧自行
+  // 读取它的动作注册表并分发。旧 tools 配置保留在磁盘，避免升级时丢失用户数据。
+  const executor = executorTool(cfg)
+  if (executor) {
+    const name = take(executor.name)
+    routes.set(name, { kind: "shortcut", tool: executor })
     specs.push({
       type: "function",
-      function: { name, description: toolDescription(t), parameters: toolParameters(t) },
+      function: { name, description: executor.description, parameters: executor.parameters },
     })
   }
 

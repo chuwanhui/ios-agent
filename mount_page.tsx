@@ -104,24 +104,21 @@ export function MountPage({ cfg, mounts, onChange, onClose = () => {} }: Props) 
           </Section>
 
           <Section
-            header={<Text>本地快捷指令工具</Text>}
+            header={<Text>统一快捷指令执行器</Text>}
             footer={
               <Text>
-                只影响模型这一轮「看得见」哪些工具；工具本身在「设置 → 本地快捷指令工具」里增删。
+                关闭后，本轮模型不会调用系统快捷指令；动作清单由执行器本身统一管理。
               </Text>
             }
           >
-            {cfg.tools.length === 0 ? (
-              <Text foregroundStyle="secondaryLabel">还没有配置本地快捷指令工具</Text>
+            {!cfg.executorShortcutName.trim() ? (
+              <Text foregroundStyle="secondaryLabel">还没有设置执行器名称</Text>
             ) : (
-              cfg.tools.map((t) => (
-                <Toggle
-                  key={t.name}
-                  title={t.name}
-                  value={eff.tools.indexOf(t.name) >= 0}
-                  onChanged={() => set({ tools: flip(eff.tools, t.name) })}
-                />
-              ))
+              <Toggle
+                title={cfg.executorShortcutName}
+                value={eff.tools.indexOf("ios_executor") >= 0}
+                onChanged={() => set({ tools: flip(eff.tools, "ios_executor") })}
+              />
             )}
           </Section>
 

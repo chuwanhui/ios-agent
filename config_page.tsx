@@ -12,7 +12,7 @@ import { ModelsPage, providerLabel, providerSubtitle, toProviders } from "./mode
 import { skillCounts } from "./skills_store"
 import { KbPage } from "./kb_page"
 import { SkillsPage } from "./skills_page"
-import { FieldRow, ToolRow, ToolsPage, toAgentTools, toToolRow } from "./tools_page"
+import { ExecutorPage, FieldRow } from "./tools_page"
 import { McpPage } from "./mcp_page"
 import { registerConfigSaver } from "./config_save"
 import { buildRoute, popRoute, pushRoute, registerNavPath, registerRoute } from "./nav_route"
@@ -55,8 +55,8 @@ export interface FormState {
   thinking: ThinkingTier
   /** 聊天页是否展示 AI 思考 / 工具调用过程。 */
   showSteps: boolean
-  // 工具
-  tools: ToolRow[]
+  // 统一执行器（旧 tools 仅保留兼容，不再在设置中逐条配置）
+  executorShortcutName: string
   // MCP
   mcpServers: McpServer[]
   // 知识库 / 技能
@@ -86,7 +86,7 @@ function toFormState(cfg: AgentConfig): FormState {
     maxHistory: String(cfg.maxHistory),
     thinking: tierOf(cfg),
     showSteps: cfg.showSteps !== false,
-    tools: (cfg.tools ?? []).map((t) => toToolRow(t)),
+    executorShortcutName: cfg.executorShortcutName ?? "智能体执行器",
     mcpServers: (cfg.mcpServers ?? []).map((m) => ({ ...m })),
     kbEnabled: cfg.kbEnabled,
     skillsEnabled: cfg.skillsEnabled,
@@ -188,10 +188,13 @@ export function AbilitySection({
         onChanged={(v) => patch({ skillCreateEnabled: v })}
       />
       <Toggle
-        title="配置快捷指令工具"
+        title="旧版：配置独立快捷指令工具"
         value={state.toolCreateEnabled}
         onChanged={(v) => patch({ toolCreateEnabled: v })}
       />
+      <Text font="footnote" foregroundStyle="secondaryLabel">
+        已由「统一快捷指令执行器」取代；保留此开关只为兼容旧配置。
+      </Text>
     </>
   )
 }
@@ -221,8 +224,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
   const skillStat = skillCounts()
 
   // 入口行的副标题
-  const toolDetail =
-    state.tools.length > 0 ? `已配置 ${state.tools.length} 个` : "还没有，进去加一个"
+  const toolDetail = state.executorShortcutName.trim() || "已关闭"
   const mcpDetail =
     state.mcpServers.length > 0
       ? `${state.mcpServers.length} 台服务器 · 启用 ${state.mcpServers.filter((m) => m.enabled && (m.url ?? "").trim()).length} 台`
@@ -251,7 +253,10 @@ export function ConfigPage({ onClose = () => {} }: Props) {
     />
   ))
   registerRoute("tools", () => (
-    <ToolsPage rows={state.tools} onChange={(rows) => patch({ tools: rows })} />
+    <ExecutorPage
+      shortcutName={state.executorShortcutName}
+      onChange={(executorShortcutName) => patch({ executorShortcutName })}
+    />
   ))
   registerRoute("mcp", () => (
     <McpPage servers={state.mcpServers} onChange={(servers) => patch({ mcpServers: servers })} />
@@ -377,14 +382,6 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       })
       return false
     }
-    // 工具：草稿行 → AgentTool（顺带补回以前会被丢掉的「参数」）
-    const built = toAgentTools(state.tools)
-    if (built.error) {
-      Dialog.alert({ message: built.error })
-      return false
-    }
-    const tools = built.tools
-
     const mcpServers: McpServer[] = []
     for (const m of state.mcpServers) {
       const url = (m.url ?? "").trim()
@@ -418,7 +415,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       thinkingEnabled: state.thinking !== "off",
       reasoningEffort: state.thinking === "off" ? "" : state.thinking,
       showSteps: state.showSteps,
-      tools,
+      executorShortcutName: state.executorShortcutName.trim(),
       mcpServers,
       kbEnabled: state.kbEnabled,
       skillsEnabled: state.skillsEnabled,
@@ -593,7 +590,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
           >
             <NavRow
               icon="bolt.fill"
-              title="本地快捷指令工具"
+                title="统一快捷指令执行器"
               detail={toolDetail}
               route="tools"
             />

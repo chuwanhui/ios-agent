@@ -287,6 +287,8 @@ export interface AgentConfig {
   maxToolRounds: number
   thinkingEnabled: boolean
   reasoningEffort: string
+  /** 唯一的系统快捷指令入口；所有 action 都经它分发并默认回传。 */
+  executorShortcutName: string
   tools: AgentTool[]
   /** 远程 MCP 服务器列表。 */
   mcpServers: McpServer[]
@@ -577,6 +579,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   maxToolRounds: 3,
   thinkingEnabled: true,
   reasoningEffort: "high",
+  executorShortcutName: "智能体执行器",
   tools: [],
   mcpServers: [],
   kbEnabled: true,
@@ -808,6 +811,28 @@ export function toolDescription(t: AgentTool): string {
   return desc + params + tail
 }
 
+/** 统一执行器是唯一默认暴露给模型的系统快捷指令工具。 */
+export function executorTool(cfg: AgentConfig): AgentTool | null {
+  const shortcutName = String(cfg.executorShortcutName ?? "").trim()
+  if (!shortcutName) return null
+  return {
+    name: "ios_executor",
+    shortcutName,
+    returns: true,
+    description:
+      "通过统一执行器完成 iPhone 上登记的动作。先用 action=\"list_tools\" 获取当前可用动作和参数；" +
+      "再用返回的 action id 执行。params 必须是该动作要求的 JSON 对象。所有调用都会异步回传真实结果。",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", description: "动作 id；不确定当前有哪些动作时先传 list_tools" },
+        params: { type: "object", description: "该动作的参数对象；list_tools 时传 {}" },
+      },
+      required: ["action"],
+    },
+  }
+}
+
 const FUNC_NAME_CHARS = /[^A-Za-z0-9_-]+/g
 
 /** 生成模型看到的函数名（只允许 [A-Za-z0-9_-]，去重，≤ 64 字符）。 */
@@ -876,6 +901,7 @@ export function effectiveConfig(cfg: AgentConfig, mounts?: SessionMounts): Agent
   return {
     ...cfg,
     tools: cfg.tools.filter((t) => toolNames.has(t.name)),
+    executorShortcutName: toolNames.has("ios_executor") ? cfg.executorShortcutName : "",
     mcpServers: cfg.mcpServers.filter((s) => mcpIds.has(s.id)),
     kbEnabled: mounts.kb && cfg.kbEnabled,
     skillsEnabled: mounts.skills.length > 0 && cfg.skillsEnabled,
@@ -889,7 +915,7 @@ export function effectiveConfig(cfg: AgentConfig, mounts?: SessionMounts): Agent
  */
 export function mountsFromConfig(cfg: AgentConfig, enabledSkillIds: string[]): SessionMounts {
   return {
-    tools: cfg.tools.map((t) => t.name),
+    tools: cfg.executorShortcutName.trim() ? ["ios_executor"] : [],
     mcp: cfg.mcpServers.filter((s) => s.enabled).map((s) => s.id),
     skills: enabledSkillIds.slice(),
     kb: cfg.kbEnabled,
@@ -953,7 +979,8 @@ export function validateConfig(cfg: AgentConfig): string | null {
 export const CONFIG_KEYS: string[] = [
   "apiKey", "baseUrl", "apiPath", "model", "systemPrompt",
   "maxHistory", "maxToolRounds", "thinkingEnabled",
-  "reasoningEffort", "tools", "mcpServers", "kbEnabled", "skillsEnabled",
+    "reasoningEffort", "tools", "mcpServers", "kbEnabled", "skillsEnabled",
+  "executorShortcutName",
   "embedEnabled", "embedBaseUrl", "embedPath", "embedApiKey", "embedModel",
   "showSteps", "agentName", "avatarPath", "gitToken", "modelOptions", "modelOptionsAt",
   "balanceText", "balanceDetail", "balanceSource", "balanceAt",

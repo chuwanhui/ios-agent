@@ -808,6 +808,7 @@ export function capabilitiesFor(cfg: AgentConfig): Capability[] {
   if (on("cliEnabled")) list.push(capRunCli())
   if (on("skillScriptEnabled") && cfg.skillsEnabled !== false) list.push(capRunSkillScript())
   if (on("skillCreateEnabled")) list.push(capCreateSkill())
-  if (on("toolCreateEnabled")) list.push(capCreateShortcutTool())
+  // 逐条创建快捷指令工具已由统一执行器取代：系统快捷指令库不能由本应用写入，
+  // 继续暴露这个能力只会生成不会被执行器读取的旧配置。
   return list
 }

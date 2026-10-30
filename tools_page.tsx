@@ -404,6 +404,55 @@ export function ToolsPage({ rows, onChange }: Props) {
   )
 }
 
+/**
+ * 统一执行器的设置页。用户只需创建这一条快捷指令；动作清单由执行器自己的
+ * 注册表管理，模型会先调用 list_tools 再选择 action，不再逐条登记快捷指令。
+ */
+export function ExecutorPage(props: { shortcutName: string; onChange: (name: string) => void }) {
+  const name = props.shortcutName.trim()
+  return (
+    <VStack
+      navigationTitle="统一执行器"
+      navigationBarTitleDisplayMode="inline"
+      toolbar={saveToolbar()}
+    >
+      <Form>
+        <Section
+          header={<Text>唯一的快捷指令入口</Text>}
+          footer={
+            <Text>
+              智能体只会调用这一条快捷指令，并传入 action、params、callId。执行器应先处理 action=list_tools，返回当前动作清单；其他 action 按它自己的注册表分发执行。
+            </Text>
+          }
+        >
+          <FieldRow label="快捷指令名">
+            <TextField
+              title="智能体执行器"
+              value={props.shortcutName}
+              onChanged={(v: string) => props.onChange(v)}
+            />
+          </FieldRow>
+          <Text font="footnote" foregroundStyle="secondaryLabel">
+            {name ? `模型会调用「${name}」，所有调用默认等待回传。` : "留空会关闭系统快捷指令执行能力。"}
+          </Text>
+        </Section>
+
+        <Section
+          header={<Text>执行器输入格式</Text>}
+          footer={<Text>callId 是回传校验令牌，必须原样取出并 URL 编码后放进回调地址。</Text>}
+        >
+          <Text font="footnote" foregroundStyle="secondaryLabel">
+            {'{"action":"list_tools","params":{},"callId":"…"}'}
+          </Text>
+          <Text font="footnote" foregroundStyle="secondaryLabel">
+            {'回传：scripting://run/智能体?callId=<编码后的 callId>&result=<编码后的结果>'}
+          </Text>
+        </Section>
+      </Form>
+    </VStack>
+  )
+}
+
 interface DetailProps {
   /** 第几条（自动函数名要用它保持一致）。 */
   index: number
