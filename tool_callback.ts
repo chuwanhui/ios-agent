@@ -3,7 +3,7 @@
  *
  * 触发一个带 `returns` 的快捷指令工具时，先落一条 pending 记录（写在磁盘上，
  * App 被杀掉也还在，默认 10 分钟内有效）；快捷指令末尾「打开 URL」回调
- * `scripting://run/<脚本名>?result=…` 时，我们做两件事：
+ * `scripting://run/<脚本名>?callId=…&result=…` 时，我们做两件事：
  *   1. 把结果回填到那条工具步骤（过程卡片上显示「已回传」+ 真实结果）；
  *   2. 把结果当成一条**隐藏输入**（hidden: true）让智能体接着回答 —— 只进上下文，聊天界面不显示。
  *
@@ -43,7 +43,10 @@ interface PendingFile {
 }
 
 function newCid(): string {
-  return "sc" + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36)
+  // URL 回传的能力令牌：不能只靠毫秒时间戳或很小的随机空间。
+  let random = ""
+  for (let i = 0; i < 4; i++) random += Math.floor(Math.random() * 0x100000000).toString(36)
+  return "sc" + Date.now().toString(36) + random
 }
 
 function readFile(): PendingFile {
@@ -183,7 +186,10 @@ export function handleCallback(params: any): CallbackOutcome | null {
   const now = Date.now()
   const f = readFile()
   const pending = prunePending(f.pending, now)
-  const wantedCid = pickText(params, ["cid", "id"])
+  const wantedCid = pickText(params, ["callId", "cid", "id"])
+  // 禁止按快捷指令名或「最近一条」猜测匹配；任何本机 App 都能打开
+  // scripting:// URL，只有本次调用附带的 callId 才能授权回填。
+  if (!wantedCid) return null
   // 同一条回传送达两次（比如冷启动那次已经在 mount 时处理过）就忽略
   if (wantedCid && f.done.some((d) => d.cid === wantedCid)) return null
 
@@ -196,36 +202,20 @@ export function handleCallback(params: any): CallbackOutcome | null {
       }
     }
   }
-  const hint = pickText(params, ["tool", "name", "shortcut", "工具", "快捷指令"])
-  if (idx < 0 && hint) {
-    for (let i = pending.length - 1; i >= 0; i--) {
-      const p = pending[i]
-      if (p.shortcutName === hint || p.toolName === hint) {
-        idx = i
-        break
-      }
-    }
-  }
-  // 没给线索（普通的回调 URL 就是这样）：认最近一次触发的那个
-  if (idx < 0 && pending.length > 0) idx = pending.length - 1
   const matched: PendingCall | null = idx >= 0 ? pending[idx] : null
 
   const store = loadStore()
   const hit = matched ? findStep(store, matched.cid) : null
+  if (!matched || !hit) return null
   let session: Session | null = null
   if (hit) {
     for (let i = 0; i < store.sessions.length; i++) {
       if (store.sessions[i].id === hit.session.id) session = store.sessions[i]
     }
   }
-  if (!session) {
-    for (let i = 0; i < store.sessions.length; i++) {
-      if (store.sessions[i].id === store.currentId) session = store.sessions[i]
-    }
-  }
-  if (!session) session = makeSession()
+  if (!session) return null
 
-  const shortcutName = matched?.shortcutName || hint || ""
+  const shortcutName = matched.shortcutName
   const text = callbackText(shortcutName, result)
 
   // ① 回填过程卡片上的那一步（结果被真实回传覆盖，标上「已回传」）

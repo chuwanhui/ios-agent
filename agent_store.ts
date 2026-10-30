@@ -457,6 +457,96 @@ const LEGACY_HISTORY_FILE = AGENT_DIR + "/history.json"
 
 export const NEW_SESSION_TITLE = "新对话"
 
+/** 密钥不应随 config.json（及设备备份）明文保存。 */
+const KEYCHAIN_PREFIX = "scripting-agent/v1/"
+const KEYCHAIN_OPTIONS = { accessibility: "unlocked_this_device" as const }
+
+function keychainGet(key: string, fallback = ""): string {
+  try {
+    const saved = Keychain.get(KEYCHAIN_PREFIX + key)
+    if (saved != null) return saved
+    if (fallback) Keychain.set(KEYCHAIN_PREFIX + key, fallback, KEYCHAIN_OPTIONS)
+  } catch {
+    // 兼容旧运行时：不能因为 Keychain 不可用而让已有配置失效。
+  }
+  return fallback
+}
+
+/** 只有成功写入 Keychain 才能从配置文件中脱敏，避免静默丢失密钥。 */
+function storeSecret(key: string, value?: string): boolean {
+  try {
+    if (value) return Keychain.set(KEYCHAIN_PREFIX + key, value, KEYCHAIN_OPTIONS)
+    Keychain.remove(KEYCHAIN_PREFIX + key)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function hydrateSecrets(cfg: AgentConfig): AgentConfig {
+  return {
+    ...cfg,
+    providers: (cfg.providers ?? []).map((p) => ({
+      ...p,
+      apiKey: keychainGet("provider/" + p.id, p.apiKey ?? ""),
+    })),
+    mcpServers: (cfg.mcpServers ?? []).map((s) => ({
+      ...s,
+      token: keychainGet("mcp/" + s.id, s.token ?? ""),
+    })),
+    embedApiKey: keychainGet("embed", cfg.embedApiKey ?? ""),
+    gitToken: keychainGet("git", cfg.gitToken ?? ""),
+  }
+}
+
+function redactSecrets(cfg: AgentConfig): AgentConfig {
+  const providers = (cfg.providers ?? []).map((p) => ({
+    ...p,
+    apiKey: storeSecret("provider/" + p.id, p.apiKey) ? "" : p.apiKey,
+  }))
+  const mcpServers = (cfg.mcpServers ?? []).map((s) => ({
+    ...s,
+    token: storeSecret("mcp/" + s.id, s.token) ? "" : s.token,
+  }))
+  const embedStored = storeSecret("embed", cfg.embedApiKey)
+  const gitStored = storeSecret("git", cfg.gitToken)
+  return {
+    ...cfg,
+    // apiKey 是当前 provider 的镜像；provider 写入成功后同样可以去掉。
+    apiKey: providers.some((p) => p.id === cfg.activeProviderId && p.apiKey) ? cfg.apiKey : "",
+    providers,
+    mcpServers,
+    embedApiKey: embedStored ? "" : cfg.embedApiKey,
+    gitToken: gitStored ? "" : cfg.gitToken,
+  }
+}
+
+/** 防止应用被杀时留下半截 JSON；保留一份最后完整写入作恢复。 */
+function recoverAtomicFile(path: string): void {
+  const backup = path + ".bak"
+  try {
+    if (!FileManager.existsSync(path) && FileManager.existsSync(backup)) FileManager.renameSync(backup, path)
+  } catch {}
+}
+
+function writeJsonAtomically(path: string, value: any): void {
+  const temp = path + ".tmp"
+  const backup = path + ".bak"
+  FileManager.writeAsStringSync(temp, JSON.stringify(value, null, 2))
+  try {
+    if (FileManager.existsSync(backup)) FileManager.removeSync(backup)
+    if (FileManager.existsSync(path)) FileManager.renameSync(path, backup)
+    FileManager.renameSync(temp, path)
+    if (FileManager.existsSync(backup)) FileManager.removeSync(backup)
+  } catch (e) {
+    try {
+      if (!FileManager.existsSync(path) && FileManager.existsSync(backup)) FileManager.renameSync(backup, path)
+      if (FileManager.existsSync(temp)) FileManager.removeSync(temp)
+    } catch {}
+    throw e
+  }
+}
+
 /** 默认的角色设定（系统提示词）。 */
 export const DEFAULT_SYSTEM_PROMPT =
   "你是一个运行在用户手机上的智能体助手，能调用用户的快捷指令、MCP 工具、本地知识库和技能来帮他完成任务，" +
@@ -760,15 +850,15 @@ export function shortcutProtocolText(scriptName: string): string {
     "最后加三个动作：",
     "1. 「URL 编码」：输入 = 要回传的内容（文本）。",
     "2. 「文本」：内容写 ",
-    "   scripting://run/" + name + "?result=",
-    "   紧接着插入上一步「URL 编码」的结果（中间不要有空格或换行）。",
+    "   scripting://run/" + name + "?callId=",
+    "   紧接着插入输入词典中的 callId（先 URL 编码），再写 &result= 和 URL 编码后的结果。",
     "3. 「打开 URL」：输入取上一步的文本。",
     "",
     "对应地把工具的 returns 打开（或“回传结果”开关）。",
     "注意：整条 URL 越短越好（建议 2000 字符以内），结果太长就只回传摘要。",
     "注意：回调会同时把 Scripting 拉回前台；结果到达后智能体会自动接着回复你。",
-    "注意：一次只派一个工具时不用管；同一轮派了多个，可以在 ?result= 前加 tool=快捷指令名&",
-    "      （例如 ?tool=导航回家&result=）让智能体知道是哪一个回来了。",
+    "注意：回传必须带本次输入中的 callId；它用于精确匹配等待中的工具调用。",
+    "      tool=快捷指令名 仅用于展示，不能替代 callId。",
     "注意：回传记录会在磁盘上留 10 分钟，App 中途被关掉也接得上。",
   ].join("\n")
 }
@@ -819,6 +909,7 @@ const LEGACY_DEFAULT_SYSTEM_PROMPTS = [
 
 export function loadConfig(): AgentConfig {
   try {
+    recoverAtomicFile(CONFIG_FILE)
     const raw = FileManager.readAsStringSync(CONFIG_FILE)
     const parsed = JSON.parse(raw)
     const merged = { ...DEFAULT_CONFIG, ...parsed }
@@ -828,9 +919,15 @@ export function loadConfig(): AgentConfig {
     ) {
       merged.systemPrompt = DEFAULT_SYSTEM_PROMPT
     }
-    return syncActiveProvider(withLegacyProvider(merged))
+    const hydrated = syncActiveProvider(hydrateSecrets(withLegacyProvider(merged)))
+    const needsMigration =
+      !!(parsed.apiKey || parsed.embedApiKey || parsed.gitToken) ||
+      (parsed.providers ?? []).some((p: any) => !!p?.apiKey) ||
+      (parsed.mcpServers ?? []).some((s: any) => !!s?.token)
+    if (needsMigration) saveConfig(hydrated)
+    return hydrated
   } catch {
-    return syncActiveProvider(withLegacyProvider({ ...DEFAULT_CONFIG }))
+    return syncActiveProvider(hydrateSecrets(withLegacyProvider({ ...DEFAULT_CONFIG })))
   }
 }
 
@@ -840,7 +937,7 @@ export function loadConfig(): AgentConfig {
 export function saveConfig(cfg: AgentConfig): void {
   const out = syncActiveProvider(cfg)
   FileManager.createDirectorySync(AGENT_DIR, true)
-  FileManager.writeAsStringSync(CONFIG_FILE, JSON.stringify(out, null, 2))
+  writeJsonAtomically(CONFIG_FILE, redactSecrets(out))
 }
 
 /** 返回错误文案；null 表示校验通过。校验的是「当前使用」那家供应商。 */
@@ -903,6 +1000,7 @@ export function deriveTitle(messages: ChatMessage[]): string {
 
 export function loadStore(): SessionStore {
   try {
+    recoverAtomicFile(SESSIONS_FILE)
     const parsed = JSON.parse(FileManager.readAsStringSync(SESSIONS_FILE))
     if (parsed && Array.isArray(parsed.sessions)) {
       const sessions: Session[] = parsed.sessions
@@ -929,7 +1027,7 @@ export function loadStore(): SessionStore {
 
 export function saveStore(store: SessionStore): void {
   FileManager.createDirectorySync(AGENT_DIR, true)
-  FileManager.writeAsStringSync(SESSIONS_FILE, JSON.stringify(store, null, 2))
+  writeJsonAtomically(SESSIONS_FILE, store)
 }
 
 /** 保证 store 里有一个可用的当前会话（没有就新建一个并放到最前）。 */

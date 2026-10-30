@@ -21,6 +21,8 @@ const SKILL_FILE = "SKILL.md"
 const MAX_FILES = 300
 const MAX_DEPTH = 5
 const MAX_FILE_CHARS = 200 * 1024
+const MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
+const MAX_UNPACKED_BYTES = 100 * 1024 * 1024
 
 export interface SkillMeta {
   id: string
@@ -160,6 +162,22 @@ function ls(dir: string): string[] {
   }
   const d = dir.replace(/\/+$/, "")
   return names.map((n) => (n.startsWith("/") || n.indexOf("/") >= 0 ? n : d + "/" + n))
+}
+
+function treeWithinLimit(dir: string, depth = 0, seen = { files: 0, bytes: 0 }): boolean {
+  if (depth > MAX_DEPTH + 2 || seen.files > MAX_FILES * 4) return false
+  for (const p of ls(dir)) {
+    let isDir = false
+    try { isDir = FileManager.isDirectorySync(p) } catch { return false }
+    if (isDir) {
+      if (!treeWithinLimit(p, depth + 1, seen)) return false
+      continue
+    }
+    seen.files += 1
+    try { seen.bytes += Number(FileManager.statSync(p).size ?? 0) } catch { return false }
+    if (seen.bytes > MAX_UNPACKED_BYTES) return false
+  }
+  return true
 }
 
 function extOf(path: string): string {
@@ -339,23 +357,36 @@ export async function importSkills(
       if (isDir) {
         installFromDir(p, name, reg, used, res)
       } else if (ext === "zip") {
+        try {
+          if (Number(FileManager.statSync(p).size ?? 0) > MAX_ARCHIVE_BYTES) {
+            res.errors.push(`${name}：压缩包超过 ${MAX_ARCHIVE_BYTES / 1024 / 1024} MB 上限`)
+            continue
+          }
+        } catch {
+          res.errors.push(`${name}：无法读取压缩包大小`)
+          continue
+        }
         const tmp = FileManager.temporaryDirectory + "/skill_" + Date.now().toString(36) + rand36(3)
         try {
           await FileManager.unzip(p, tmp)
         } catch (e: any) {
+          try { FileManager.removeSync(tmp) } catch {}
           res.errors.push(`${name}：解压失败（${e?.message ?? "不是有效的 zip"}）`)
           continue
         }
-        const root = findSkillRoot(tmp)
-        if (!root) {
-          res.skipped.push(`${name}（压缩包里没找到 SKILL.md）`)
-          continue
-        }
-        installFromDir(root, name.replace(/\.zip$/i, ""), reg, used, res)
         try {
-          FileManager.removeSync(tmp)
-        } catch {
-          // ignore
+          if (!treeWithinLimit(tmp)) {
+            res.errors.push(`${name}：解压后的内容超过大小、层级或文件数限制`)
+            continue
+          }
+          const root = findSkillRoot(tmp)
+          if (!root) {
+            res.skipped.push(`${name}（压缩包里没找到 SKILL.md）`)
+            continue
+          }
+          installFromDir(root, name.replace(/\.zip$/i, ""), reg, used, res)
+        } finally {
+          try { FileManager.removeSync(tmp) } catch {}
         }
       } else if (ext === "md" || ext === "markdown") {
         installFromMarkdown(p, name, reg, used, res)

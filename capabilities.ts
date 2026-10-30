@@ -425,11 +425,10 @@ const CLI_BLOCKED: RegExp[] = [
   /\b(mv|cp)\s+[^\s]*\/\s*$/,
 ]
 
-/** 参数里的引号 / 空格处理：简单参数原样，其余用双引号包住。 */
+/** 参数一律使用 POSIX 单引号，避免双引号中的 `$()` / 反引号被 shell 展开。 */
 function quoteArg(s: string): string {
   const t = String(s ?? "")
-  if (/^[A-Za-z0-9_\-.,:\/@+=%]+$/.test(t)) return t
-  return '"' + t.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"'
+  return "'" + t.replace(/'/g, "'\\\"'\\\"'") + "'"
 }
 
 /** 这条命令能不能跑；返回 null 表示放行。 */
@@ -750,7 +749,6 @@ function capCreateShortcutTool(): Capability {
       const cfg = loadConfig()
       const used = new Set((cfg.tools ?? []).map((t) => t.name))
       const { name, note } = makeToolFunctionName(rawName, shortcutName, used.size, used)
-      if (used.has(name)) return fail(`已经有一个叫「${name}」的工具了，换一个名字。`)
 
       const tool: AgentTool = { name, shortcutName, description }
       const params = normalizeParams(args?.params)

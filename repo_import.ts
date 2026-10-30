@@ -19,6 +19,11 @@ import { loadConfig, saveConfig } from "./agent_store"
 import { SkillMeta, findSkillRoot, installSkillFolder } from "./skills_store"
 
 const TMP_DIR = FileManager.appGroupDocumentsDirectory + "/agent/tmp"
+const REPO_DOWNLOAD_TIMEOUT_MS = 45000
+const MAX_REPO_ZIP_BYTES = 20 * 1024 * 1024
+const MAX_UNPACKED_BYTES = 100 * 1024 * 1024
+const MAX_UNPACKED_FILES = 1200
+const MAX_UNPACKED_DEPTH = 8
 
 export interface RepoRef {
   host: "github" | "gitlab"
@@ -119,6 +124,37 @@ function isDir(p: string): boolean {
   }
 }
 
+function treeWithinLimit(dir: string, depth = 0, seen = { files: 0, bytes: 0 }): boolean {
+  if (depth > MAX_UNPACKED_DEPTH || seen.files > MAX_UNPACKED_FILES) return false
+  for (const p of ls(dir)) {
+    if (isDir(p)) {
+      if (!treeWithinLimit(p, depth + 1, seen)) return false
+      continue
+    }
+    seen.files += 1
+    try { seen.bytes += Number(FileManager.statSync(p).size ?? 0) } catch { return false }
+    if (seen.files > MAX_UNPACKED_FILES || seen.bytes > MAX_UNPACKED_BYTES) return false
+  }
+  return true
+}
+
+async function fetchRepoZip(url: string, headers: Record<string, string>): Promise<any> {
+  const controller = new AbortController()
+  let timer: any = null
+  try {
+    const request = fetch(url, { headers, signal: controller.signal as any })
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        try { controller.abort() } catch {}
+        reject(new Error(`下载超时（${Math.round(REPO_DOWNLOAD_TIMEOUT_MS / 1000)} 秒）`))
+      }, REPO_DOWNLOAD_TIMEOUT_MS)
+    })
+    return await Promise.race([request, timeout])
+  } finally {
+    if (timer != null) clearTimeout(timer)
+  }
+}
+
 function cleanup(paths: string[]): void {
   for (const p of paths) {
     try {
@@ -160,12 +196,22 @@ export async function importSkillFromRepo(
   for (const cand of candidateUrls(ref)) {
     onProgress?.(`正在下载 ${ref.owner}/${ref.repo}@${cand.label} …`)
     try {
-      const resp = await fetch(cand.url, { headers })
+      const resp = await fetchRepoZip(cand.url, headers)
       if (!resp.ok) {
         lastErr = `${cand.label}：HTTP ${resp.status}`
         continue
       }
-      buf = await resp.arrayBuffer()
+      const declared = Number(resp.headers?.get?.("content-length") ?? 0)
+      if (declared > MAX_REPO_ZIP_BYTES) {
+        lastErr = `${cand.label}：压缩包超过 ${MAX_REPO_ZIP_BYTES / 1024 / 1024} MB 上限`
+        continue
+      }
+      const downloaded: ArrayBuffer = await resp.arrayBuffer()
+      if (downloaded.byteLength > MAX_REPO_ZIP_BYTES) {
+        lastErr = `${cand.label}：压缩包超过 ${MAX_REPO_ZIP_BYTES / 1024 / 1024} MB 上限`
+        continue
+      }
+      buf = downloaded
       refLabel = cand.label
       break
     } catch (e: any) {
@@ -191,6 +237,7 @@ export async function importSkillFromRepo(
   }
 
   try {
+    if (!treeWithinLimit(outDir)) return { error: "解压后的内容超过大小、层级或文件数限制" }
     // zip 顶层是 `<repo>-<branch>`，子目录再往下找
     let base = outDir
     const top = ls(outDir)

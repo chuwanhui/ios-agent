@@ -6,7 +6,7 @@ import { McpTool, callMcpTool, collectMcpTools } from "./mcp_client"
 import { formatKbHits, kbStats, searchKbHybrid } from "./kb_store"
 import { embedQueryVector, kbSemanticReady } from "./kb_embed"
 import { listSkills, readSkill, skillsPrompt } from "./skills_store"
-import { addPending } from "./tool_callback"
+import { addPending, finishPending } from "./tool_callback"
 import { CapResult, Capability, capabilitiesFor } from "./capabilities"
 
 type LLMMessage = {
@@ -59,15 +59,28 @@ function buildBody(
  * 发一次 POST。HTTP 层出错时给 error 挂上 `httpStatus`：
  * 上层据此区分「接口本身报错」（直接抛给用户）和「这个服务端不支持流式」（退回一次性请求）。
  */
+const CHAT_CONNECT_TIMEOUT_MS = 45000
+
 async function postChat(cfg: AgentConfig, body: Record<string, any>): Promise<any> {
-  const resp = await fetch(endpoint(cfg), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + cfg.apiKey,
-    },
-    body: JSON.stringify(body),
-  })
+  const controller = new AbortController()
+  let timer: any = null
+  try {
+    const request = fetch(endpoint(cfg), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + cfg.apiKey,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal as any,
+    })
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        try { controller.abort() } catch {}
+        reject(new Error(`连接模型服务超时（${Math.round(CHAT_CONNECT_TIMEOUT_MS / 1000)} 秒）`))
+      }, CHAT_CONNECT_TIMEOUT_MS)
+    })
+    const resp: any = await Promise.race([request, timeout])
   if (!resp.ok) {
     const text = await resp.text()
     const err: any = new Error(`接口错误 ${resp.status}：${text.slice(0, 300)}`)
@@ -75,6 +88,9 @@ async function postChat(cfg: AgentConfig, body: Record<string, any>): Promise<an
     throw err
   }
   return resp
+  } finally {
+    if (timer != null) clearTimeout(timer)
+  }
 }
 
 /** 流式增量：正文与推理分开推给 UI（打字机效果）。 */
@@ -658,20 +674,25 @@ async function executeTool(
 
   // —— 快捷指令工具：默认单向触发；配了 returns 的会把结果回传回来 ——
   const tool = route.tool
-  const inputText = keys.length > 0 ? JSON.stringify(args) : ""
+  let cid: string | undefined
+  let inputText = keys.length > 0 ? JSON.stringify(args) : ""
+  if (tool.returns) {
+    // 先生成并持久化不可猜测的调用编号，再将它随输入交给快捷指令回传。
+    const pending = addPending({ toolName: name, shortcutName: tool.shortcutName })
+    cid = pending.cid
+    inputText = JSON.stringify({ ...args, callId: cid })
+  }
   hooks.onEvent?.({ type: "tool", kind: "shortcut", name, target: tool.shortcutName, argsText: inputText })
 
   const t0 = Date.now()
   const ok = await Safari.openURL(buildShortcutURL(tool, inputText))
   let text: string
-  /** 等回传的调用编号（回填结果时靠它对上号）。 */
-  let cid: string | undefined
   if (!ok) {
+    if (cid) finishPending(cid)
     text = `执行快捷指令「${tool.shortcutName}」失败（无法打开，可能快捷指令名不存在）`
   } else if (tool.returns) {
     // 配了回调 URL：先落一条 pending，快捷指令末尾「打开 URL」把结果送回来时再回填。
     // 这一轮不等它（回传会变成一条隐藏输入续上），所以这里必须交代清楚「结果待回」。
-    cid = addPending({ toolName: name, shortcutName: tool.shortcutName, args: inputText }).cid
     const tail = "。它执行完会把结果回传，届时接着回答；现在只需说明已触发，不要编造结果。"
     text = keys.length > 0
       ? `已触发快捷指令「${tool.shortcutName}」，传入参数：${inputText}，正在等它回传结果` + tail

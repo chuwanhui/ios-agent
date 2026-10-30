@@ -385,12 +385,9 @@ export async function collectMcpTools(
   servers: McpServer[] | undefined,
   force = false,
 ): Promise<McpToolList[]> {
-  const out: McpToolList[] = []
-  for (const s of servers ?? []) {
-    if (!s?.enabled || !(s.url ?? "").trim()) continue
-    out.push(await listMcpTools(s, force))
-  }
-  return out
+  const enabled = (servers ?? []).filter((s) => s?.enabled && !!(s.url ?? "").trim())
+  // 每台服务器仍有各自的超时；并行拉取避免一台失联服务器阻塞整个工具清单。
+  return await Promise.all(enabled.map((s) => listMcpTools(s, force)))
 }
 
 /** 把工具清单拼成给模型看的一句话，用于拿工具之前快速判断连没连上。 */

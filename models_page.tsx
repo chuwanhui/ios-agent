@@ -99,6 +99,7 @@ export function toProviderRows(list: ModelProvider[] | undefined): ModelProvider
  * （列表每改一次都会重渲，被推进去的子页可能跟着重新挂载，不挡一下会反复打接口。）
  */
 const autoPulled = new Set<string>()
+const MODELS_REQUEST_TIMEOUT_MS = 20000
 function claimAutoPull(key: string): boolean {
   if (autoPulled.has(key)) return false
   autoPulled.add(key)
@@ -119,7 +120,21 @@ export async function fetchModelList(
     const headers: Record<string, string> = { Accept: "application/json" }
     const key = (apiKey ?? "").trim()
     if (key) headers.Authorization = "Bearer " + key
-    const resp = await fetch(base + "/models", { headers })
+    const controller = new AbortController()
+    let timer: any = null
+    const request = fetch(base + "/models", { headers, signal: controller.signal as any })
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        try { controller.abort() } catch {}
+        reject(new Error(`拉取模型超时（${Math.round(MODELS_REQUEST_TIMEOUT_MS / 1000)} 秒）`))
+      }, MODELS_REQUEST_TIMEOUT_MS)
+    })
+    let resp: any
+    try {
+      resp = await Promise.race([request, timeout])
+    } finally {
+      if (timer != null) clearTimeout(timer)
+    }
     if (!resp.ok) {
       const text = await resp.text()
       return {

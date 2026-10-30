@@ -165,9 +165,9 @@ function scriptName(): string {
   }
 }
 
-/** 回传 URL 前缀：快捷指令末尾把它和结果拼起来，编码后「打开 URL」。 */
+/** 回传 URL 的固定部分；callId 必须从本次快捷指令收到的 JSON 输入中取出。 */
 function callbackURL(shortcut: string): string {
-  return "scripting://run/" + scriptName() + "?tool=" + shortcut + "&result="
+  return "scripting://run/" + scriptName() + "?tool=" + encodeURIComponent(shortcut) + "&callId="
 }
 
 function runShortcutURL(name: string, input?: string): string {
@@ -198,22 +198,20 @@ function stepsFor(shortcut: string, specs: ToolParamSpec[], returns: boolean): s
   const lines: string[] = []
   let n = 1
   lines.push(`${n++}. 在「快捷指令」App 里建一条快捷指令，名字就叫「${shortcut}」（一个字符都不能差）`)
-  if (hasArgs) {
+  if (hasArgs || returns) {
     lines.push(`${n++}. 第一个动作放「接收输入」→ 类型选「文本」；智能体传来的是一整段 JSON 文本`)
-    lines.push(
-      `${n++}. 放「从输入获取词典」，再给每个参数加一条「获取词典值」，键名依次是 ${specs
-        .map((s) => s.name)
-        .join("、")}`,
-    )
+    const keys = specs.map((s) => s.name)
+    if (returns) keys.push("callId")
+    lines.push(`${n++}. 放「从输入获取词典」，再给每个参数加一条「获取词典值」，键名依次是 ${keys.join("、")}`)
   } else {
     lines.push(`${n++}. 不用接输入：智能体只负责把这条快捷指令叫起来`)
   }
   lines.push(`${n++}. 中间放你真正要做的事（导航、开关、查询…）`)
   if (returns) {
     lines.push(
-      `${n++}. 最后往回传：加「文本」，内容写 ${callbackURL(
+      `${n++}. 最后往回传：从输入词典取出 callId；加「文本」，内容写 ${callbackURL(
         shortcut,
-      )} 后面紧跟你要回传的内容 → 用「URL 编码」处理这段文本 → 再「打开 URL」`,
+      )} 后面紧跟 URL 编码后的 callId，再写 &result= 和 URL 编码后的结果 →「打开 URL」。callId 不能省略。`,
     )
   } else {
     lines.push(`${n++}. 想让智能体看到执行结果，就打开上面的「回传」开关，再按提示加回传动作`)
