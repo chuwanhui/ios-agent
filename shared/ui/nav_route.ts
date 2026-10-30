@@ -1,18 +1,4 @@
-/**
- * 设置页里「进下一层 / 返回上一级」的总线。
- *
- * 为什么要有这个文件——脚本里没有编程式 pop 的 API：
- *   · Navigation.useDismiss() 关掉的是**整个 sheet**（真机探针验证），不是上一层；
- *   · EnvironmentValuesReader 给出来的 dismiss 在被 push 的页面里是空操作；
- *   · Navigation 命名空间只有 present / useDismiss 两个函数。
- * 唯一可靠的返回手段是给 NavigationStack 绑一个 path（string[]），
- * 「返回上一级」= path.setValue(path.value.slice(0, -1))。
- *
- * 而 navigationDestination 的处理器只在导航栈**根视图**那一层生效：被 push 的页面自己
- * 声明的处理器不会被问到（真机探针验证），path 里的每个 id 都得由根组件造页面。
- * 为了不让设置页认识所有子页的细节，子页在渲染时把「自己下一层怎么造」登记在这里
- * （registerRoute），设置页根组件只负责查表（buildRoute）。
- */
+/** Shared path-based navigation registry for settings subpages. */
 
 /** path 里存的是字符串 id，id 用「前缀 + 冒号」分成不同子页的地盘。 */
 type PathLike = { value: string[]; setValue: (v: string[]) => void }

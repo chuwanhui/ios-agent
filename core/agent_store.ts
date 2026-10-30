@@ -319,8 +319,6 @@ export interface AgentConfig {
   skillScriptEnabled: boolean
   /** 让助手自己创建 / 注册新技能。 */
   skillCreateEnabled: boolean
-  /** 让助手自己登记快捷指令工具（写完配置后由它引导用户去『快捷指令』App 建）。 */
-  toolCreateEnabled: boolean
   // —— 角色形象 ——
   agentName: string
   /** 用户上传的头像图片路径（图片存在 appGroup，这里只存路径）；为空就显示占位图。 */
@@ -343,7 +341,6 @@ export type AgentConfigToggle =
   | "cliEnabled"
   | "skillScriptEnabled"
   | "skillCreateEnabled"
-  | "toolCreateEnabled"
 
 /** AI 调用一次工具的完整记录（聊天页用它回放 AI 的决策过程）。 */
 export interface ToolStep {
@@ -597,7 +594,6 @@ export const DEFAULT_CONFIG: AgentConfig = {
   cliEnabled: false,
   skillScriptEnabled: false,
   skillCreateEnabled: false,
-  toolCreateEnabled: false,
 }
 
 // ———————————————————————— 模型供应商 ————————————————————————
@@ -985,7 +981,7 @@ export const CONFIG_KEYS: string[] = [
   "showSteps", "agentName", "avatarPath", "gitToken", "modelOptions", "modelOptionsAt",
   "balanceText", "balanceDetail", "balanceSource", "balanceAt",
   "providers", "activeProviderId",
-  "fsEnabled", "cliEnabled", "skillScriptEnabled", "skillCreateEnabled", "toolCreateEnabled",
+  "fsEnabled", "cliEnabled", "skillScriptEnabled", "skillCreateEnabled",
 ]
 
 /**

@@ -11,12 +11,10 @@
  *     （本机 iOS shell 本来也不支持），明显会大范围删文件的写法也拒绝；
  *   - 每次执行都有超时，输出统一截断，免得一次命令把上下文撑爆。
  */
-import { Script } from "scripting"
 import {
-  AgentConfig, AgentConfigToggle, AgentTool, ToolParamSpec, loadConfig, makeToolFunctionName,
-  saveConfig, shortcutProtocolText,
+  AgentConfig, AgentConfigToggle,
 } from "./agent_store"
-import { SKILL_INBOX, findSkill, importSkills, listSkills, skillDirOf } from "./skills_store"
+import { SKILL_INBOX, findSkill, importSkills, listSkills, skillDirOf } from "../features/skills/skills_store"
 
 /**
  * 去掉尾部斜杠。实测 `FileManager.documentsDirectory` 是带尾斜杠的
@@ -44,18 +42,6 @@ const OUT_CLIP = 8000
 const READ_CLIP = 20000
 /** 列目录最多列多少条。 */
 const LIST_MAX = 300
-
-/** 回传 URL 里用的脚本名（就是本脚本在 Scripting 里的名字，兜底「智能体」）。 */
-const CALLBACK_SCRIPT_NAME = (() => {
-  try {
-    const n: any = (Script as any)?.name
-    // CLI 调试时 name 是「scripting-ts run」，只有真机上才是脚本名
-    if (typeof n === "string" && n.trim() && n.indexOf("scripting-ts") < 0) return n.trim()
-    return "智能体"
-  } catch {
-    return "智能体"
-  }
-})()
 
 // ———————————————————————— 路径 ————————————————————————
 
@@ -151,12 +137,10 @@ export interface CapResult {
   argsText?: string
   /** 这次动作产出 / 改动的文件（绝对路径）：聊天页据此画「产出文件」卡片。 */
   files?: string[]
-  /** 新建的快捷指令工具名：聊天页要把它并进当前会话的挂载。 */
-  createdTools?: string[]
 }
 
 /** 能力的类别（决定过程卡片上的小标题）。 */
-export type CapKind = "fs" | "cli" | "skill" | "shortcut"
+export type CapKind = "fs" | "cli" | "skill"
 
 export interface Capability {
   /** 控制它的设置开关。 */
@@ -169,29 +153,6 @@ export interface Capability {
   /** 过程卡片上的默认目标文案。 */
   label: string
   run: (args: any) => Promise<CapResult>
-}
-
-const TYPES = ["string", "number", "integer", "boolean"]
-
-/** 模型给的工具参数声明 → ToolParamSpec[]（坏数据直接丢掉，不报错）。 */
-function normalizeParams(raw: any): ToolParamSpec[] | undefined {
-  if (!Array.isArray(raw)) return undefined
-  const out: ToolParamSpec[] = []
-  for (const item of raw) {
-    const p: any = typeof item === "string" ? { name: item } : item
-    const name = String(p?.name ?? "").trim()
-    if (!name) continue
-    const spec: ToolParamSpec = {
-      name,
-      description: String(p?.description ?? "").trim(),
-    }
-    const ty = String(p?.type ?? "")
-    if (TYPES.indexOf(ty) >= 0) spec.type = ty as ToolParamSpec["type"]
-    if (p?.required === false) spec.required = false
-    if (Array.isArray(p?.enum) && p.enum.length > 0) spec.enum = p.enum.map((x: any) => String(x))
-    out.push(spec)
-  }
-  return out.length > 0 ? out : undefined
 }
 
 function fail(text: string): CapResult {
@@ -702,100 +663,6 @@ function capCreateSkill(): Capability {
   }
 }
 
-// —— 快捷指令工具配置 ——
-
-function capCreateShortcutTool(): Capability {
-  return {
-    toggle: "toolCreateEnabled",
-    kind: "shortcut",
-    name: "create_shortcut_tool",
-    label: "快捷指令工具",
-    description:
-      "帮用户在助手里登记一个「本地快捷指令工具」，登记完你就能像调用其它工具那样调用它。" +
-      "注意：这一步只是写配置，用户手机里那条快捷指令还得用户自己在『快捷指令』App 里建出来（名字必须一模一样），" +
-      "所以调用这个工具之后，你必须把「怎么在快捷指令 App 里建这条快捷指令」的步骤讲给用户听。",
-    parameters: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "工具名（模型调用时用的函数名，英文 / 拼音最好）" },
-        shortcutName: { type: "string", description: "对应的快捷指令名（要跟用户手机里那条一模一样）" },
-        description: { type: "string", description: "这个工具干什么、什么时候用" },
-        params: {
-          type: "array",
-          description: "参数声明（可选）：快捷指令会收到一个 JSON 文本输入",
-          items: {
-            type: "object",
-            properties: {
-              name: { type: "string", description: "参数名" },
-              description: { type: "string", description: "参数说明" },
-              type: { type: "string", description: "string / number / integer / boolean" },
-              required: { type: "boolean", description: "是否必填，默认 true" },
-              enum: { type: "array", description: "限定取值", items: { type: "string" } },
-            },
-            required: ["name"],
-          },
-        },
-        returns: { type: "boolean", description: "这条快捷指令末尾会不会把结果回传给助手（需要用户按协议配回调 URL），默认否" },
-      },
-      required: ["name", "shortcutName", "description"],
-    },
-    run: async (args) => {
-      const rawName = String(args?.name ?? "").trim()
-      const shortcutName = String(args?.shortcutName ?? "").trim() || rawName
-      const description = String(args?.description ?? "").trim()
-      if (!rawName) return fail("工具得有名字。")
-      if (!description) return fail("要给一句说明，否则模型以后不知道该在什么时候调用它。")
-
-      const cfg = loadConfig()
-      const used = new Set((cfg.tools ?? []).map((t) => t.name))
-      const { name, note } = makeToolFunctionName(rawName, shortcutName, used.size, used)
-
-      const tool: AgentTool = { name, shortcutName, description }
-      const params = normalizeParams(args?.params)
-      if (params) tool.params = params
-      if (args?.returns === true) tool.returns = true
-
-      try {
-        saveConfig({ ...cfg, tools: [...(cfg.tools ?? []), tool] })
-      } catch (e: any) {
-        return fail(`写配置失败：${e?.message ?? String(e)}`)
-      }
-
-      const detail = [
-        `- 工具名（模型看到）：${name}`,
-        `- 对应快捷指令：${shortcutName}`,
-        params ? `- 参数：${params.map((p) => p.name + (p.required === false ? "（可选）" : "")).join("、")}` : "- 参数：无",
-        `- 等回传：${tool.returns ? "会（用户要按协议配回调）" : "不会（单向触发）"}`,
-      ].join("\n")
-
-      const guide = [
-        "【接下来用户要做的（务必转述给用户）】",
-        "1. 打开『快捷指令』App → 右上角 + → 新建一条快捷指令。",
-        `2. 把它重命名为「${shortcutName}」（必须和上面一模一样，差一个字都调不到）。`,
-        "3. 按下面的协议接线：",
-        "",
-        shortcutProtocolText(CALLBACK_SCRIPT_NAME),
-        "",
-        tool.returns
-          ? "（这条工具标了「等回传」：用户必须把末尾三个动作加上，否则助手会一直等不到结果。）"
-          : "（这条工具是单向触发：用户不用配回调，助手也不会拿到结果。）",
-      ].join("\n")
-
-      return {
-        text:
-          `✅ 已把快捷指令工具登记进助手配置（用户下次打开设置页也能看到、能改）。\n` +
-          detail +
-          (note ? `\n（提示：${note}）` : "") +
-          `\n\n${guide}`,
-        ok: true,
-        target: shortcutName,
-        argsText: name,
-        createdTools: [name],
-      }
-    },
-  }
-}
-
 // ———————————————————————— 对外 ——
 
 /** 当前开着哪些能力（按设置页的开关过滤，默认全关）。 */
@@ -808,7 +675,5 @@ export function capabilitiesFor(cfg: AgentConfig): Capability[] {
   if (on("cliEnabled")) list.push(capRunCli())
   if (on("skillScriptEnabled") && cfg.skillsEnabled !== false) list.push(capRunSkillScript())
   if (on("skillCreateEnabled")) list.push(capCreateSkill())
-  // 逐条创建快捷指令工具已由统一执行器取代：系统快捷指令库不能由本应用写入，
-  // 继续暴露这个能力只会生成不会被执行器读取的旧配置。
   return list
 }

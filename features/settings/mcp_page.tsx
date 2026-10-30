@@ -1,10 +1,10 @@
 import {
   Button, Form, HStack, Image, Section, SecureField, Text, TextField, Toggle, VStack, useState,
 } from "scripting"
-import { McpServer, makeMcpServer, mcpServersToJson, parseMcpServersJson } from "./agent_store"
-import { listMcpTools } from "./mcp_client"
-import { saveToolbar } from "./config_save"
-import { pushRoute, registerRoute } from "./nav_route"
+import { McpServer, makeMcpServer, mcpServersToJson, parseMcpServersJson } from "../../core/agent_store"
+import { listMcpTools } from "../../integrations/mcp/mcp_client"
+import { saveToolbar } from "../../shared/ui/config_save"
+import { pushRoute, registerRoute } from "../../shared/ui/nav_route"
 
 /** 从地址里抠出主机名，列表里当一行摘要用。 */
 function hostOf(url: string): string {

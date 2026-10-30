@@ -27,7 +27,7 @@ import {
   type KbChunk,
   type KbVectorStats,
 } from "./kb_store"
-import { loadConfig } from "./agent_store"
+import { loadConfig } from "../../core/agent_store"
 
 /** 出过一次错就歇 60 秒（不然服务挂掉时每次提问都要干等一个超时）。 */
 const FAIL_CACHE_MS = 60000

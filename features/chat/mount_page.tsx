@@ -1,8 +1,8 @@
 import {
   Button, Form, NavigationStack, Section, Text, Toggle, VStack, useState,
 } from "scripting"
-import { AgentConfig, SessionMounts, mountsFromConfig } from "./agent_store"
-import { listSkills } from "./skills_store"
+import { AgentConfig, SessionMounts, mountsFromConfig } from "../../core/agent_store"
+import { listSkills } from "../skills/skills_store"
 
 interface Props {
   /** 当前设置（决定「跟随设置」时能挂哪些东西）。 */

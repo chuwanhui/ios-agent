@@ -77,52 +77,30 @@ scripting://run/智能体?callId=<编码后的callId>&result=<编码后的结果
 ├── script.json          脚本元信息
 ├── index.tsx            入口：全屏打开聊天页
 ├── widget.tsx           主屏小部件启动器（桌面入口，点一下进聊天页）
-├── chat_page.tsx        聊天 UI（气泡 / 输入栏 / 工具栏 / 抽屉）
-├── sidebar.tsx          左侧抽屉
-├── avatar.tsx           角色头像（相册选照片 / 灰色占位图）
-├── config_page.tsx      设置页（子页入口，也是唯一写 config.json 的地方）
-├── config_save.tsx      子页右上角的「保存」总线（复用设置页的校验 + 写盘）
-├── nav_route.ts         设置页内部的 path 路由总线（进下一层 / 返回上一级；脚本没有别的回退手段）
-├── tools_page.tsx       本地快捷指令工具子页（表单添加 / 参数行 / 试运行 / 回传开关）
-├── mcp_page.tsx         MCP 服务器子页（粘贴 JSON 导入 / 编辑 / 测试连接）
-├── mount_page.tsx       会话级挂载面板（这一轮要用哪些能力）
-├── kb_page.tsx          知识库管理页（上传 / 挂载文件夹）
-├── skills_page.tsx      技能管理页（上传 / 从 Git 仓库安装）
+├── core/                Agent loop, persistence, capabilities, callback handling
+├── features/
+│   ├── chat/            Chat UI and session mounts
+│   ├── settings/        Settings, models, executor and MCP pages
+│   ├── knowledge/       Knowledge-base storage, embedding and UI
+│   └── skills/          Skill storage, repository import and UI
+├── integrations/mcp/    Streamable HTTP MCP client
+├── shared/ui/           Shared avatar and navigation utilities
 ├── intent.tsx           快捷指令 / Siri 入口
-├── agent_core.ts        DeepSeek 请求（流式 SSE + 工具循环）
-├── tool_callback.ts     快捷指令回传（pending 落盘 + 回填步骤 + 续跑一轮）
-├── mcp_client.ts        MCP 客户端（JSON-RPC over Streamable HTTP）
-├── kb_store.ts          知识库（bigram + BM25 + 向量索引与混合排序）
-├── kb_embed.ts          知识库 ↔ 向量服务的胶水层（增量建向量 / 查询向量 / 失败降级）
-├── embed_client.ts      OpenAI 兼容的 /embeddings 客户端
-├── skills_store.ts      技能导入 / 注册表 / 渐进式披露
-├── repo_import.ts       从 Git 仓库安装技能（下载 zip → 找 SKILL.md → 安装）
-├── capabilities.ts      智能体「自己动手」的能力（文件 / 命令行 / 跑技能脚本 / 建技能 / 建工具）
-├── balance_client.ts    查余额（按服务商的候选端点试，认不出的接口就说查不到）
-├── models_page.tsx      模型供应商管理页（搜索 + 列表 + 详情：地址 / Key / 拉模型 / 查余额 / 设为当前 / 删除）
-└── agent_store.ts       配置 + 会话存储
+└── widget.tsx           主屏小部件入口
 ```
 
 ## 数据与隐私
 
-- **API Key 不在本仓库里**：配置存在 `<AppGroup>/Documents/agent/config.json`，会话在 `sessions.json`（其中存有每轮的 token 用量），知识库索引在 `kb/index.json`，技能在 `skills.json` + `skills/<id>/`。仓库只含代码。
-- 「从 Git 仓库导入」用的访问令牌存在 `config.json`（`gitToken`），只在你点导入时随请求发给你填的那个仓库域名。
+- **密钥不在仓库或配置文件中**：模型、MCP、向量与 Git 令牌存放在 iOS Keychain；配置与会话分别存于 `<AppGroup>/Documents/agent/config.json` 和 `sessions.json`。
 - 挂载的外部文件夹以系统**安全作用域书签**保存（只记住你亲自授权的那一个目录），脚本对它是只读的，不会改动里面的文件；取消挂载只删本地索引。
 - 头像照片只存在本机 `<AppGroup>/Documents/agent/avatar.png`（不会上传；选图时的暂存文件 `avatar-pending.png` 在取消或保存后会被清掉）。
 - 网络请求只发往你自己配置的接口（DeepSeek / 你填的 MCP 服务器 / 你填的向量服务）。
 - 知识库的**关键词检索完全在本机**完成；只有在你主动开启「语义检索」后，才会把**查询文本和待建索引的片段**发给你自己填的向量接口（不发送对话内容）。
 - 会话历史默认只保留最近 50 条（可配置），不会无限增长。
 
-## 开发
-
-```
-scripting-ts project "智能体" --check     # 类型检查，应为 0 报错
-scripting-ts preview_ui chat_page.tsx      # 预览 UI
-```
-
 ## 已知限制
 
-- **快捷指令工具默认拿不到返回值**（iOS 不提供该能力），参数以 JSON 文本单向传过去；要让模型看到结果，需要按上文协议在该快捷指令末尾加「回调 URL」并打开 `returns`，且整条 URL 不能太长（建议 2000 字符以内）。需要省事的真实返回值请用 MCP 工具。
+- 统一执行器需要在快捷指令末尾按上文协议回传 `callId` 与结果；没有回传时，智能体无法确认操作是否成功。
 - MCP 只支持**远程 HTTP 型**，本地 stdio 型（`npx …`）在 iOS 沙箱里无法运行。
 - 知识库 PDF 需为**可选中文字**的电子版，扫描件抽不出文本；上传与外部文件夹都只能读文本类文档（txt / md / json / csv / log / 源码 / PDF），图片 OCR 与 docx / xlsx 不支持。
 - 外部文件夹的书签只能由你在选文件夹时创建，脚本不能自己新建或删除书签。

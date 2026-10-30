@@ -1,5 +1,5 @@
 import { fetch } from "scripting"
-import { McpServer } from "./agent_store"
+import { McpServer } from "../../core/agent_store"
 
 /**
  * 极简 MCP 客户端：JSON-RPC 2.0 over Streamable HTTP。

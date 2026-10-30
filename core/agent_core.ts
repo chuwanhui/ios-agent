@@ -2,10 +2,10 @@ import { fetch } from "scripting"
 import {
   AgentConfig, AgentTool, ChatMessage, McpServer, TokenUsage, ToolStep, executorTool,
 } from "./agent_store"
-import { McpTool, callMcpTool, collectMcpTools } from "./mcp_client"
-import { formatKbHits, kbStats, searchKbHybrid } from "./kb_store"
-import { embedQueryVector, kbSemanticReady } from "./kb_embed"
-import { listSkills, readSkill, skillsPrompt } from "./skills_store"
+import { McpTool, callMcpTool, collectMcpTools } from "../integrations/mcp/mcp_client"
+import { formatKbHits, kbStats, searchKbHybrid } from "../features/knowledge/kb_store"
+import { embedQueryVector, kbSemanticReady } from "../features/knowledge/kb_embed"
+import { listSkills, readSkill, skillsPrompt } from "../features/skills/skills_store"
 import { addPending, finishPending } from "./tool_callback"
 import { CapResult, Capability, capabilitiesFor } from "./capabilities"
 
@@ -362,7 +362,6 @@ export type RunAgentHooks = {
    * 助手刚给自己登记了新工具（快捷指令工具）。
    * 会话挂载会把这些名字之外的快捷指令工具过滤掉，所以聊天页收到后要把它们并进当前会话。
    */
-  onToolsCreated?: (names: string[]) => void
 }
 
 /** 兼容旧写法：第 4 个参数也可以直接传一个 onEvent 回调。 */
@@ -615,7 +614,6 @@ async function executeTool(
     )
     if (res.files && res.files.length > 0) step.files = res.files
     hooks.onStep?.(step)
-    if (res.createdTools && res.createdTools.length > 0) hooks.onToolsCreated?.(res.createdTools)
     return { text: res.text, step }
   }
 

@@ -5,10 +5,10 @@ import {
   SKILL_DONE, SKILL_INBOX, SkillMeta, deleteSkill, importSkills, listSkills, readSkill,
   setSkillEnabled, skillDirOf, skillsPrompt, stageSkillFile,
 } from "./skills_store"
-import { loadConfig } from "./agent_store"
+import { loadConfig } from "../../core/agent_store"
 import { importSkillFromRepo } from "./repo_import"
-import { saveToolbar } from "./config_save"
-import { pushRoute, registerRoute } from "./nav_route"
+import { saveToolbar } from "../../shared/ui/config_save"
+import { pushRoute, registerRoute } from "../../shared/ui/nav_route"
 
 /** 搜索匹配：技能名 / 描述，大小写不敏感。 */
 function matchesSkill(s: SkillMeta, query: string): boolean {

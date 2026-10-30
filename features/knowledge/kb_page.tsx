@@ -8,7 +8,7 @@ import {
 import {
   autoEmbedAfterImport, buildKbVectors, dropKbVectors, kbSemanticEnabled, kbVectorStatus,
 } from "./kb_embed"
-import { saveToolbar } from "./config_save"
+import { saveToolbar } from "../../shared/ui/config_save"
 
 interface Props {
   /** 资料或文件夹有变化时通知设置页刷新统计。 */

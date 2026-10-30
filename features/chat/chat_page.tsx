@@ -5,12 +5,12 @@ import {
   AgentConfig, ChatMessage, SessionMounts, SessionStore, ToolStep, capMessages,
   deriveTitle, effectiveConfig, loadConfig, loadStore, makeSession, removeSession, saveStore,
   upsertSession, withCurrentSession,
-} from "./agent_store"
-import { runAgent } from "./agent_core"
-import { ConfigPage } from "./config_page"
+} from "../../core/agent_store"
+import { runAgent } from "../../core/agent_core"
+import { ConfigPage } from "../settings/config_page"
 import { MountPage } from "./mount_page"
 import { DRAWER_WIDTH, Sidebar } from "./sidebar"
-import { AvatarSpec } from "./avatar"
+import { AvatarSpec } from "../../shared/ui/avatar"
 import { AssistantMessage, Bubble, EmptyState, LiveThinking, ToolReplyCard } from "./message_bubble"
 import { ChatInputBar, MountStrip } from "./chat_input"
 import { useCallbackAutoJob } from "./callback"
@@ -159,19 +159,6 @@ export function ChatPage() {
           setLiveText("")
         },
         onStep: (s) => setLiveSteps((prev) => [...prev, s]),
-        onToolsCreated: (names) => {
-          setCfg(loadConfig())
-          if (!mountsNow) return // 没单独挂载过 = 用设置里的全部工具，新工具自然可见
-          const set = new Set(mountsNow.tools)
-          let changed = false
-          for (const n of names) {
-            if (!set.has(n)) {
-              set.add(n)
-              changed = true
-            }
-          }
-          if (changed) mountsNow = { ...mountsNow, tools: Array.from(set) }
-        },
         onDelta: (d) => {
           if (d.reset) {
             pendingText = ""

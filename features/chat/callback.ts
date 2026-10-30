@@ -1,6 +1,6 @@
 import { Script, useEffect, useState } from "scripting"
-import { handleCallback } from "./tool_callback"
-import { loadConfig, loadStore } from "./agent_store"
+import { handleCallback } from "../../core/tool_callback"
+import { loadConfig, loadStore } from "../../core/agent_store"
 
 /**
  * 快捷指令回传有一条冷启动入口（queryParameters）和一条被唤起入口（onResume），

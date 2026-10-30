@@ -1,9 +1,9 @@
 import {
   HStack, Image, ProgressView, Spacer, Text, VStack, useState,
 } from "scripting"
-import { ChatMessage, TokenUsage, ToolStep } from "./agent_store"
-import { toolKindLabel } from "./agent_core"
-import { Avatar, AvatarSpec } from "./avatar"
+import { ChatMessage, TokenUsage, ToolStep } from "../../core/agent_store"
+import { toolKindLabel } from "../../core/agent_core"
+import { Avatar, AvatarSpec } from "../../shared/ui/avatar"
 
 /** 过程面板里嵌套小卡片的底色（iOS 单色风格，不用蓝色强调）。 */
 const STEP_FILL = "rgba(120,120,128,0.12)"

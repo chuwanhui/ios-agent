@@ -15,7 +15,7 @@
  */
 
 import { fetch } from "scripting"
-import { loadConfig, saveConfig } from "./agent_store"
+import { loadConfig, saveConfig } from "../../core/agent_store"
 import { SkillMeta, findSkillRoot, installSkillFolder } from "./skills_store"
 
 const TMP_DIR = FileManager.appGroupDocumentsDirectory + "/agent/tmp"

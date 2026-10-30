@@ -1,6 +1,6 @@
 import { HStack, Image, Script, Spacer, Text, VStack, Widget } from "scripting"
-import { loadConfig, loadStore } from "./agent_store"
-import { Avatar } from "./avatar"
+import { loadConfig, loadStore } from "./core/agent_store"
+import { Avatar } from "./shared/ui/avatar"
 
 /**
  * 主屏启动器：桌面上的「智能体」卡片，点一下就进聊天页。

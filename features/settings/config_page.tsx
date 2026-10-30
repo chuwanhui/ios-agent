@@ -5,20 +5,20 @@ import {
 import {
   AgentConfig, DEFAULT_SYSTEM_PROMPT, McpServer, ModelProvider, loadConfig, makeMcpServer, saveConfig,
   validateConfig,
-} from "./agent_store"
-import { kbStats } from "./kb_store"
-import { DEFAULT_EMBED_PATH, embedReady, embedSettingsOf, embedTexts, QUERY_TIMEOUT_MS } from "./embed_client"
+} from "../../core/agent_store"
+import { kbStats } from "../knowledge/kb_store"
+import { DEFAULT_EMBED_PATH, embedReady, embedSettingsOf, embedTexts, QUERY_TIMEOUT_MS } from "../knowledge/embed_client"
 import { ModelsPage, providerLabel, providerSubtitle, toProviders } from "./models_page"
-import { skillCounts } from "./skills_store"
-import { KbPage } from "./kb_page"
-import { SkillsPage } from "./skills_page"
+import { skillCounts } from "../skills/skills_store"
+import { KbPage } from "../knowledge/kb_page"
+import { SkillsPage } from "../skills/skills_page"
 import { ExecutorPage, FieldRow } from "./tools_page"
 import { McpPage } from "./mcp_page"
-import { registerConfigSaver } from "./config_save"
-import { buildRoute, popRoute, pushRoute, registerNavPath, registerRoute } from "./nav_route"
+import { registerConfigSaver } from "../../shared/ui/config_save"
+import { buildRoute, popRoute, pushRoute, registerNavPath, registerRoute } from "../../shared/ui/nav_route"
 import {
   AVATAR_PATH, Avatar, PENDING_AVATAR_PATH, chooseAvatarFromPhotos, commitAvatar, discardAvatar,
-} from "./avatar"
+} from "../../shared/ui/avatar"
 
 // ———————————————————————— 思考深度 ————————————————————————
 
@@ -67,7 +67,6 @@ export interface FormState {
   cliEnabled: boolean
   skillScriptEnabled: boolean
   skillCreateEnabled: boolean
-  toolCreateEnabled: boolean
   // 知识库语义检索（可选）
   embedEnabled: boolean
   embedBaseUrl: string
@@ -94,7 +93,6 @@ function toFormState(cfg: AgentConfig): FormState {
     cliEnabled: cfg.cliEnabled === true,
     skillScriptEnabled: cfg.skillScriptEnabled === true,
     skillCreateEnabled: cfg.skillCreateEnabled === true,
-    toolCreateEnabled: cfg.toolCreateEnabled === true,
     embedEnabled: cfg.embedEnabled === true,
     embedBaseUrl: cfg.embedBaseUrl ?? "",
     embedPath: cfg.embedPath ?? DEFAULT_EMBED_PATH,
@@ -187,14 +185,6 @@ export function AbilitySection({
         value={state.skillCreateEnabled}
         onChanged={(v) => patch({ skillCreateEnabled: v })}
       />
-      <Toggle
-        title="旧版：配置独立快捷指令工具"
-        value={state.toolCreateEnabled}
-        onChanged={(v) => patch({ toolCreateEnabled: v })}
-      />
-      <Text font="footnote" foregroundStyle="secondaryLabel">
-        已由「统一快捷指令执行器」取代；保留此开关只为兼容旧配置。
-      </Text>
     </>
   )
 }
@@ -230,20 +220,12 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       ? `${state.mcpServers.length} 台服务器 · 启用 ${state.mcpServers.filter((m) => m.enabled && (m.url ?? "").trim()).length} 台`
       : "还没有，可以粘贴 JSON 导入"
 
-  // —— 导航 ——
-
-  /**
-   * 设置页里的所有跳转都走这一个 path：进下一层 = 末尾加一条 id，返回上一级 = 去掉末尾那条
-   * （脚本没有别的编程式返回手段，原因见 nav_route.ts）。
-   *
-   * path 里的 id 由两处登记：本页登记 5 个一级入口，各子页登记自己下一层的详情页。
-   * navigationDestination 的处理器只在导航栈根视图生效（真机验证过），所以只能集中在这里查表。
-   */
+  // Shared path state for settings subpages.
   const navPath = useObservable<string[]>([])
   registerNavPath(navPath)
   useEffect(() => () => registerNavPath(null), [])
 
-  // 一级入口的路由工厂：写在渲染里，保证闭包拿到的是本页最新的 state。
+  // Register route factories during render so they capture the latest form state.
   registerRoute("models", () => (
     <ModelsPage
       rows={state.providers}
@@ -423,7 +405,6 @@ export function ConfigPage({ onClose = () => {} }: Props) {
       cliEnabled: state.cliEnabled,
       skillScriptEnabled: state.skillScriptEnabled,
       skillCreateEnabled: state.skillCreateEnabled,
-      toolCreateEnabled: state.toolCreateEnabled,
       embedEnabled: state.embedEnabled,
       embedBaseUrl: state.embedBaseUrl.trim(),
       embedPath: state.embedPath.trim() || DEFAULT_EMBED_PATH,

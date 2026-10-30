@@ -1,6 +1,6 @@
 import { Intent, Script } from "scripting"
-import { loadConfig, loadStore, saveStore, upsertSession, withCurrentSession, capMessages, deriveTitle, tryApplyConfigJson } from "./agent_store"
-import { runAgent } from "./agent_core"
+import { loadConfig, loadStore, saveStore, upsertSession, withCurrentSession, capMessages, deriveTitle, tryApplyConfigJson } from "./core/agent_store"
+import { runAgent } from "./core/agent_core"
 
 /**
  * 快捷指令入口：把传入的文本当一轮对话发给模型，结果作为快捷指令的返回值。

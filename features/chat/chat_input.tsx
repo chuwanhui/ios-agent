@@ -1,7 +1,7 @@
 import {
   Button, HStack, Image, ScrollView, Text, TextField,
 } from "scripting"
-import { SessionMounts } from "./agent_store"
+import { SessionMounts } from "../../core/agent_store"
 import { mountChips } from "./mount_page"
 
 /**

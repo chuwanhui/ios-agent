@@ -14,11 +14,11 @@ import {
   useEffect,
   useState,
 } from "scripting"
-import { ModelProvider, makeProvider, suggestProviderName } from "./agent_store"
+import { ModelProvider, makeProvider, suggestProviderName } from "../../core/agent_store"
 import { queryBalance } from "./balance_client"
 import { FieldRow } from "./tools_page"
-import { saveToolbar } from "./config_save"
-import { pushRoute, registerRoute } from "./nav_route"
+import { saveToolbar } from "../../shared/ui/config_save"
+import { pushRoute, registerRoute } from "../../shared/ui/nav_route"
 
 // ———————————————————————— 小工具 ————————————————————————
 
