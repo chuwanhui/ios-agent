@@ -118,7 +118,10 @@ export function NavRow(props: { icon: string; title: string; detail: string; rou
       <Image
         systemName={props.icon}
         foregroundStyle="secondaryLabel"
-        frame={{ width: 26, alignment: "center" }}
+        padding={7}
+        background="tertiarySystemFill"
+        clipShape={{ type: "rect", cornerRadius: 9 }}
+        frame={{ width: 32, alignment: "center" }}
       />
       <VStack
         alignment="leading"
@@ -447,7 +450,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
         }
       >
         <Form>
-          <Section title="角色">
+          <Section title="个人化">
             <FieldRow label="助手名字">
               <TextField
                 title="小助"
@@ -472,14 +475,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             />
           </Section>
 
-          <Section
-            header={<Text>模型</Text>}
-            footer={
-              <Text>
-                支持多家供应商：每家一套接口地址、API Key 和模型，聊天用「当前使用」那一家。进子页会自动给当前那家拉一次模型和余额。
-              </Text>
-            }
-          >
+          <Section header={<Text>连接</Text>} footer={<Text>模型、手机自动化和远程工具都在这里统一管理。</Text>}>
             <NavRow
               icon="cpu"
               title="供应商与模型"
@@ -498,7 +494,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
           </Section>
 
           <Section
-            header={<Text>思考深度</Text>}
+            header={<Text>回答方式</Text>}
             footer={
               <VStack alignment="leading" spacing={4}>
                 {TIERS.map((t) => (
@@ -523,7 +519,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             </Picker>
           </Section>
 
-          <Section title="智能体设定">
+          <Section title="指令">
             <TextField
               title="系统提示词"
               value={state.systemPrompt}
@@ -538,7 +534,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             />
           </Section>
 
-          <Section title="对话">
+          <Section title="对话与显示">
             <HStack spacing={8} frame={{ maxWidth: "infinity" }}>
               <Text>{`上下文聊天记录数量：${state.maxHistory.trim() || "50"} 条`}</Text>
               <Spacer />
@@ -565,13 +561,10 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             </Text>
           </Section>
 
-          <Section
-            header={<Text>工具</Text>}
-            footer={<Text>两个子页右上角都有「保存」，在那里存完会自动退回这一层。</Text>}
-          >
+          <Section header={<Text>自动化</Text>} footer={<Text>执行器负责本机操作；MCP 用于连接远程服务。</Text>}>
             <NavRow
               icon="bolt.fill"
-                title="统一快捷指令执行器"
+              title="快捷指令执行器"
               detail={toolDetail}
               route="tools"
             />
@@ -584,7 +577,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
           </Section>
 
           <Section
-            header={<Text>能力</Text>}
+            header={<Text>高级权限</Text>}
             footer={
               <Text>
                 助手自己动手的权限，默认全关；打开哪一项，它才能做哪件事，随时可以关掉。
@@ -595,7 +588,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             <AbilitySection state={state} patch={patch} />
           </Section>
 
-          <Section title="知识库">
+          <Section title="资料">
             <Toggle
               title="启用知识库检索"
               value={state.kbEnabled}
@@ -603,7 +596,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             />
             <NavRow
               icon="books.vertical"
-              title="管理知识库"
+              title="知识库"
               detail={
                 kbStat.docs > 0
                   ? `已导入 ${kbStat.docs} 份资料 · ${kbStat.chunks} 个片段`
@@ -613,7 +606,7 @@ export function ConfigPage({ onClose = () => {} }: Props) {
             />
           </Section>
 
-          <Section title="知识库语义检索（可选）">
+          <Section title="高级：语义检索">
             <Toggle
               title="启用语义检索"
               value={state.embedEnabled}

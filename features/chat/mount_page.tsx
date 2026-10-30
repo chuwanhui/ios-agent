@@ -34,7 +34,7 @@ export function MountPage({ cfg, mounts, onChange, onClose = () => {} }: Props) 
   return (
     <NavigationStack>
       <VStack
-        navigationTitle="本轮挂载"
+        navigationTitle="本轮能力"
         navigationBarTitleDisplayMode="inline"
         toolbar={{
           topBarTrailing: <Button title="完成" action={onClose} fontWeight="semibold" />,
@@ -42,16 +42,7 @@ export function MountPage({ cfg, mounts, onChange, onClose = () => {} }: Props) 
       >
         <Form>
           <Section
-            footer={
-              <VStack alignment="leading" spacing={4}>
-                <Text>
-                  挂载只对「当前这个对话」生效，会跟着历史一起存下来：下一个对话默认还是按设置页的来。
-                </Text>
-                <Text>
-                  想让某个能力不参与，就把对应的开关关掉；不确定就点下面的「恢复跟随设置」。
-                </Text>
-              </VStack>
-            }
+            footer={<Text>这里只影响当前对话；不确定时恢复为全局设置。</Text>}
           >
             <Text>
               {usingDefault ? "当前：跟随设置页的默认" : "当前：已按本会话单独挂载"}
@@ -69,8 +60,8 @@ export function MountPage({ cfg, mounts, onChange, onClose = () => {} }: Props) 
             footer={
               <Text>
                 {cfg.kbEnabled
-                  ? "开了才会在回答前检索你导入的资料。资料本身在「设置 → 知识库」里管理。"
-                  : "设置页里没有开启知识库检索，这里挂着也不会生效。想用先去设置页打开。"}
+                  ? "回答前会检索已导入的资料。"
+                  : "全局设置未启用知识库，因此本轮不会生效。"}
               </Text>
             }
           >
@@ -85,7 +76,7 @@ export function MountPage({ cfg, mounts, onChange, onClose = () => {} }: Props) 
             header={<Text>技能</Text>}
             footer={
               <Text>
-                勾上的技能才会进这一轮的系统提示（模型需要时用 read_skill 读全文）。想全部关掉就都把勾去掉。
+                只把本轮需要的技能交给智能体。
               </Text>
             }
           >
@@ -107,7 +98,7 @@ export function MountPage({ cfg, mounts, onChange, onClose = () => {} }: Props) 
             header={<Text>统一快捷指令执行器</Text>}
             footer={
               <Text>
-                关闭后，本轮模型不会调用系统快捷指令；动作清单由执行器本身统一管理。
+                关闭后，本轮不会调用系统快捷指令。
               </Text>
             }
           >
@@ -126,7 +117,7 @@ export function MountPage({ cfg, mounts, onChange, onClose = () => {} }: Props) 
             header={<Text>MCP 服务器</Text>}
             footer={
               <Text>
-                只挂这一轮要用的服务器，能少给模型几个工具、少花点 token。服务器本身在「设置 → MCP 服务器」里管理。
+                只启用本轮需要的远程服务。
               </Text>
             }
           >
@@ -153,16 +144,16 @@ export function MountPage({ cfg, mounts, onChange, onClose = () => {} }: Props) 
 export function mountChips(mounts?: SessionMounts): Array<{ key: string; label: string }> {
   if (!mounts) return []
   return [
-    { key: "kb", label: mounts.kb ? "📚 知识库" : "🚫 知识库" },
+    { key: "kb", label: mounts.kb ? "知识库" : "🚫 知识库" },
     {
       key: "skills",
-      label: mounts.skills.length > 0 ? `🧩 技能 ${mounts.skills.length}` : "🚫 技能",
+      label: mounts.skills.length > 0 ? `技能 ${mounts.skills.length}` : "🚫 技能",
     },
     {
       key: "tools",
-      label: mounts.tools.length > 0 ? `⚡ 快捷指令 ${mounts.tools.length}` : "🚫 快捷指令",
+      label: mounts.tools.length > 0 ? "执行器" : "🚫 快捷指令",
     },
-    { key: "mcp", label: mounts.mcp.length > 0 ? `🔌 MCP ${mounts.mcp.length}` : "🚫 MCP" },
+    { key: "mcp", label: mounts.mcp.length > 0 ? `MCP ${mounts.mcp.length}` : "🚫 MCP" },
   ]
 }
 

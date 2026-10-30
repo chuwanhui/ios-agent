@@ -242,14 +242,7 @@ export function KbPage({ onChanged = () => {} }: Props) {
       <Form>
         <Section
           header={<Text>上传文件</Text>}
-          footer={
-            <VStack alignment="leading" spacing={4}>
-              <Text>
-                从「文件」App 里挑要放进知识库的资料。支持 txt / md / json / csv / log / pdf；PDF 必须是能选字的电子版，扫描件（纯图片）读不出文字。
-              </Text>
-              <Text>选完会拷一份到「知识库」文件夹里再导入，原始文件仍在原处。</Text>
-            </VStack>
-          }
+          footer={<Text>支持 txt、md、json、csv、log 和可选中文字的 PDF。</Text>}
         >
           <Button
             title={busy && busy.indexOf("正在读取") >= 0 ? busy : "选择文件上传"}
@@ -260,17 +253,8 @@ export function KbPage({ onChanged = () => {} }: Props) {
         </Section>
 
         <Section
-          header={<Text>挂外部文件夹</Text>}
-          footer={
-            <VStack alignment="leading" spacing={4}>
-              <Text>
-                适合「资料一直在更新」的场景：某个文件夹（iCloud 云盘、本地文档都行）挂进来，需要时点「更新索引」重新扫一遍。
-              </Text>
-              <Text>
-                只读，绝不动原文件；删掉的文件在下一次更新索引时会从知识库消失。会跳过 .git、node_modules 这类目录，一次最多索引 300 个文件。
-              </Text>
-            </VStack>
-          }
+          header={<Text>外部资料夹</Text>}
+          footer={<Text>只读挂载。资料更新后，点「更新索引」同步。</Text>}
         >
           {folders.length === 0 ? (
             <Text foregroundStyle="secondaryLabel">还没有挂任何文件夹</Text>
@@ -300,15 +284,8 @@ export function KbPage({ onChanged = () => {} }: Props) {
         </Section>
 
         <Section
-          header={<Text>手动放资料</Text>}
-          footer={
-            <VStack alignment="leading" spacing={4}>
-              <Text>
-                也可以直接把文件拖进「文件」App 的：我的 iPhone → Scripting → 知识库，再回到这里点「扫描并导入」。AirDrop、iCloud 云盘、电脑拷进去都行。
-              </Text>
-              <Text>导入后原始文件会被移到同目录的「已导入」子文件夹，不会重复导入。</Text>
-            </VStack>
-          }
+          header={<Text>扫描本机资料</Text>}
+          footer={<Text>将文件放到 Scripting/知识库 后扫描导入。</Text>}
         >
           <Text font="footnote" foregroundStyle="secondaryLabel">
             {KB_INBOX}

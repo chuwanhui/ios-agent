@@ -224,13 +224,13 @@ export function ChatPage() {
         toolbar={
           <Toolbar>
             <ToolbarItem placement="topBarLeading">
-              <Button title="☰" action={() => setDrawerOpen((v) => !v)} />
+              <Button title="对话" action={() => setDrawerOpen((v) => !v)} />
             </ToolbarItem>
             <ToolbarItem placement="topBarTrailing">
               <Button title="完成" action={() => dismiss()} />
             </ToolbarItem>
             <ToolbarItem placement="topBarTrailing">
-              <Button title="设置" action={openSettings} />
+              <Button title="管理" action={openSettings} />
             </ToolbarItem>
           </Toolbar>
         }
@@ -260,7 +260,7 @@ export function ChatPage() {
         {/* 主内容 */}
         <VStack spacing={0} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
         <ScrollView defaultScrollAnchor="bottom" scrollDismissesKeyboard="interactively">
-          <VStack spacing={0} padding={{ top: 12, bottom: 16 }}>
+            <VStack spacing={0} padding={{ top: 18, bottom: 20 }}>
             {visible.length === 0 ? (
               <EmptyState name={cfg.agentName || "智能体"} avatar={avatar} />
             ) : null}

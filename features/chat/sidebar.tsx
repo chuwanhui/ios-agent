@@ -91,7 +91,7 @@ export function Sidebar({
       {/* 头部：角色 */}
       <HStack
         spacing={12}
-        padding={{ horizontal: 20, top: 22, bottom: 18 }}
+        padding={{ horizontal: 20, top: 24, bottom: 20 }}
         frame={{ maxWidth: "infinity", alignment: "leading" }}
       >
         <Avatar spec={avatar} size={46} background="tertiarySystemFill" />
@@ -100,7 +100,7 @@ export function Sidebar({
             {agentName}
           </Text>
           <Text font="caption" foregroundStyle="secondaryLabel">
-            {sessions.length} 个会话
+            {sessions.length === 0 ? "准备开始" : `${sessions.length} 段对话`}
           </Text>
         </VStack>
       </HStack>
@@ -136,7 +136,7 @@ export function Sidebar({
               fontWeight="semibold"
               foregroundStyle="label"
             >
-              开启新会话
+              新建对话
             </Text>
           </HStack>
         </Button>
@@ -148,7 +148,7 @@ export function Sidebar({
           padding={{ top: 14, bottom: 2, leading: 4 }}
           {...rowStyle}
         >
-          最近对话
+          对话记录
         </Text>
 
         {sorted.map((s) => {
@@ -220,7 +220,7 @@ export function Sidebar({
             foregroundStyle="label"
             frame={{ maxWidth: "infinity", alignment: "leading" }}
           >
-            设置
+            管理与设置
           </Text>
           <Image
             systemName="chevron.right"

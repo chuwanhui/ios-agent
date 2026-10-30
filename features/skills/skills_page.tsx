@@ -2,7 +2,7 @@ import {
   Button, Form, HStack, Image, SecureField, Section, Text, TextField, Toggle, VStack, useEffect, useState,
 } from "scripting"
 import {
-  SKILL_DONE, SKILL_INBOX, SkillMeta, deleteSkill, importSkills, listSkills, readSkill,
+  SKILL_INBOX, SkillMeta, deleteSkill, importSkills, listSkills, readSkill,
   setSkillEnabled, skillDirOf, skillsPrompt, stageSkillFile,
 } from "./skills_store"
 import { loadConfig } from "../../core/agent_store"
@@ -238,18 +238,8 @@ export function SkillsPage({ onChanged = () => {} }: Props) {
         </Section>
 
         <Section
-          header={<Text>从 git 仓库导入</Text>}
-          footer={
-            <VStack alignment="leading" spacing={4}>
-              <Text>
-                GitHub / GitLab 都行，公开仓库不用填令牌。可以只导入仓库里的某个子目录：
-                https://github.com/owner/repo/tree/main/skills/foo
-              </Text>
-              <Text>
-                私有仓库填访问令牌（GitHub 用 personal access token，GitLab 用 personal access token）。令牌会存在本机配置里，只用来下载这个仓库。
-              </Text>
-            </VStack>
-          }
+          header={<Text>从 Git 仓库导入</Text>}
+          footer={<Text>支持仓库或子目录 URL；私有仓库才需要访问令牌。</Text>}
         >
           <TextField
             title="仓库地址"
@@ -276,14 +266,8 @@ export function SkillsPage({ onChanged = () => {} }: Props) {
         </Section>
 
         <Section
-          header={<Text>手动放技能</Text>}
-          footer={
-            <VStack alignment="leading" spacing={4}>
-              <Text>
-                把 zip / 文件夹放进「文件」App → 我的 iPhone → Scripting → 技能，再回来点「扫描并导入」。处理完的来源会移到「已导入」。
-              </Text>
-            </VStack>
-          }
+          header={<Text>扫描本机技能</Text>}
+          footer={<Text>将 zip 或文件夹放到 Scripting/技能 后扫描导入。</Text>}
         >
           <Text font="footnote" foregroundStyle="secondaryLabel">
             {SKILL_INBOX}
@@ -307,11 +291,6 @@ export function SkillsPage({ onChanged = () => {} }: Props) {
           </Section>
         ) : null}
 
-        <Section header={<Text>文件位置</Text>}>
-          <Text font="footnote" foregroundStyle="secondaryLabel">
-            {"已导入归档：" + SKILL_DONE}
-          </Text>
-        </Section>
       </Form>
     </VStack>
   )

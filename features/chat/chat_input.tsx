@@ -10,15 +10,25 @@ import { mountChips } from "./mount_page"
  */
 export function MountStrip({ mounts, onOpen }: { mounts?: SessionMounts; onOpen: () => void }) {
   if (!mounts) return null
+  const chips = mountChips(mounts).filter((chip) => !chip.label.startsWith("🚫"))
+  if (chips.length === 0) return null
   return (
     <ScrollView axes="horizontal">
-      <HStack spacing={6} padding={{ horizontal: 12 }}>
+      <HStack spacing={6} padding={{ horizontal: 16, top: 2, bottom: 4 }}>
         <Button action={onOpen}>
-          <Text font="caption2" foregroundStyle="tertiaryLabel">本轮挂载</Text>
+          <Text font="caption2" foregroundStyle="tertiaryLabel">本轮能力</Text>
         </Button>
-        {mountChips(mounts).map((c) => (
+        {chips.map((c) => (
           <Button key={c.key} action={onOpen}>
-            <Text font="caption2" foregroundStyle="secondaryLabel">{c.label}</Text>
+            <Text
+              font="caption2"
+              foregroundStyle="secondaryLabel"
+              padding={{ horizontal: 8, vertical: 4 }}
+              background="tertiarySystemFill"
+              clipShape="capsule"
+            >
+              {c.label}
+            </Text>
           </Button>
         ))}
       </HStack>
@@ -42,23 +52,23 @@ export function ChatInputBar({
   onOpenMounts: () => void
 }) {
   return (
-    <HStack spacing={8} padding={{ horizontal: 12, top: 8, bottom: 10 }}>
+    <HStack spacing={10} padding={{ horizontal: 16, top: 8, bottom: 12 }}>
       <Button action={onOpenMounts} disabled={busy}>
         <Image
           systemName="plus.circle.fill"
           font="title2"
-          foregroundStyle={hasMounts ? "systemBlue" : "tertiaryLabel"}
+          foregroundStyle={hasMounts ? "label" : "tertiaryLabel"}
         />
       </Button>
       <HStack
-        padding={{ horizontal: 14, vertical: 9 }}
-        background="tertiarySystemFill"
+        padding={{ horizontal: 15, vertical: 10 }}
+        background="secondarySystemFill"
         clipShape="capsule"
         frame={{ maxWidth: "infinity" }}
       >
         <TextField
           title=""
-          prompt="说点什么…"
+          prompt="给我一个任务…"
           value={input}
           onChanged={onInput}
           submitLabel="send"
@@ -69,7 +79,7 @@ export function ChatInputBar({
         <Image
           systemName="arrow.up.circle.fill"
           font="title2"
-          foregroundStyle={sendEnabled ? "systemBlue" : "tertiaryLabel"}
+          foregroundStyle={sendEnabled ? "label" : "tertiaryLabel"}
         />
       </Button>
     </HStack>

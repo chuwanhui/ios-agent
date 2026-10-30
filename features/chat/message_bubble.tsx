@@ -5,7 +5,6 @@ import { ChatMessage, TokenUsage, ToolStep } from "../../core/agent_store"
 import { toolKindLabel } from "../../core/agent_core"
 import { Avatar, AvatarSpec } from "../../shared/ui/avatar"
 
-/** 过程面板里嵌套小卡片的底色（iOS 单色风格，不用蓝色强调）。 */
 const STEP_FILL = "rgba(120,120,128,0.12)"
 const CARD_FILL = "rgba(120,120,128,0.08)"
 
@@ -215,11 +214,11 @@ export function Bubble({ message, avatar }: { message: ChatMessage; avatar: Avat
       {isUser ? <Spacer /> : <Avatar spec={avatar} />}
       <VStack
         padding={{ horizontal: 14, vertical: 10 }}
-        background={isUser ? "systemBlue" : "secondarySystemFill"}
+        background={isUser ? "label" : "secondarySystemFill"}
         clipShape={{ type: "rect", cornerRadius: 18 }}
         frame={{ maxWidth: 280, alignment: isUser ? "trailing" : "leading" }}
       >
-        <Text foregroundStyle={isUser ? "white" : "label"}>{message.content}</Text>
+        <Text foregroundStyle={isUser ? "systemBackground" : "label"}>{message.content}</Text>
       </VStack>
       {isUser ? null : <Spacer />}
     </HStack>
@@ -244,8 +243,8 @@ export function ToolReplyCard({ message }: { message: ChatMessage }) {
         spacing={4}
       >
         <HStack spacing={5}>
-          <Image systemName="arrowshape.turn.up.left.fill" font="caption2" foregroundStyle="systemGreen" />
-          <Text font="caption2" fontWeight="semibold" foregroundStyle="systemGreen">工具回复</Text>
+          <Image systemName="arrow.triangle.2.circlepath" font="caption2" foregroundStyle="secondaryLabel" />
+          <Text font="caption2" fontWeight="semibold" foregroundStyle="secondaryLabel">执行结果</Text>
         </HStack>
         <Text font="subheadline" foregroundStyle="label">{message.content}</Text>
       </VStack>
@@ -289,8 +288,7 @@ export function AssistantMessage({
         <HStack spacing={0}>
           <VStack
             padding={{ horizontal: 14, vertical: 10 }}
-            background="secondarySystemFill"
-            clipShape={{ type: "rect", cornerRadius: 18 }}
+            background="clear"
           >
             <MarkdownText text={message.content} />
           </VStack>
@@ -349,12 +347,13 @@ export function LiveThinking({
 export function EmptyState({ name, avatar }: { name: string; avatar: AvatarSpec }) {
   return (
     <VStack
-      spacing={12}
-      padding={{ horizontal: 28, vertical: 56 }}
+      spacing={10}
+      padding={{ horizontal: 28, vertical: 72 }}
       frame={{ maxWidth: "infinity" }}
     >
       <Avatar spec={avatar} size={76} />
-      <Text font="title3" fontWeight="bold">{name}</Text>
+      <Text font="title2" fontWeight="bold">{name}</Text>
+      <Text font="subheadline" foregroundStyle="secondaryLabel">随时可以开始一段新对话</Text>
     </VStack>
   )
 }
